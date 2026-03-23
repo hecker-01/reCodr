@@ -1,6 +1,6 @@
 {
-  "name": "encdr",
-  "version": "1.0.0",
+  "name": "recodr",
+  "version": "1.2.1",
   "description": "Video re-encoder with GUI using ffmpeg",
   "main": "main.js",
   "scripts": {
@@ -28,8 +28,8 @@
     "electron-builder": "^24.9.1"
   },
   "build": {
-    "appId": "com.encdr.app",
-    "productName": "ENCDR",
+    "appId": "com.recodr.app",
+    "productName": "reCodr",
     "directories": {
       "buildResources": "assets",
       "output": "release"
