@@ -204,31 +204,23 @@ body {
 
 .track-item {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 12px;
   padding: 12px;
   background: var(--bg-tertiary);
   border-radius: 6px;
-  gap: 16px;
 }
 
-.track-toggle {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  cursor: pointer;
-  flex: 1;
-}
-
-.track-toggle input[type="checkbox"] {
+.track-item input[type="checkbox"] {
   width: 16px;
   height: 16px;
   accent-color: var(--accent);
   cursor: pointer;
   transition: box-shadow 0.2s;
+  flex-shrink: 0;
 }
 
-.track-toggle input[type="checkbox"]:focus-visible {
+.track-item input[type="checkbox"]:focus-visible {
   outline: none;
   box-shadow:
     0 0 0 2px var(--bg-tertiary),
@@ -239,6 +231,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1;
 }
 
 .track-name {
@@ -254,7 +247,7 @@ body {
 
 .track-action {
   min-width: 120px;
-  width: 100%;
+  width: auto;
   padding: 6px 10px;
   background: var(--bg-secondary);
   border: 1px solid var(--border);
@@ -268,6 +261,7 @@ body {
   background-repeat: no-repeat;
   background-position: right 8px center;
   padding-right: 28px;
+  flex-shrink: 0;
 }
 
 .track-action:hover:not(:disabled) {
@@ -301,6 +295,21 @@ body {
   color: var(--text-secondary);
   word-break: break-all;
   line-height: 1.6;
+  border: 1px solid transparent;
+  cursor: text;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.command-preview:hover {
+  border-color: var(--accent-faint);
+}
+
+.command-preview:focus-visible {
+  border-color: var(--accent);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.2);
 }
 
 /* Buttons */

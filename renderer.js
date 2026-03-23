@@ -9,7 +9,10 @@ let audioTracks = [];
 let subtitleTracks = [];
 let outputFormat = "mkv";
 let videoCodec = "hevc_nvenc";
+let videoQuality = "22";
+let videoPreset = "p4";
 let encodeStartTime = null;
+let commandModified = false;
 
 // Codec compatibility with formats
 const codecFormats = {
@@ -44,6 +47,8 @@ const changeFileBtn = document.getElementById("changeFileBtn");
 const encodeAnotherBtn = document.getElementById("encodeAnotherBtn");
 const outputFormatSelect = document.getElementById("outputFormat");
 const videoCodecSelect = document.getElementById("videoCodec");
+const videoQualitySelect = document.getElementById("videoQuality");
+const videoPresetSelect = document.getElementById("videoPreset");
 
 // Event Listeners
 dropZone.addEventListener("click", () => fileInput.click());
@@ -70,15 +75,45 @@ fileInput.addEventListener("change", (e) => {
 changeFileBtn.addEventListener("click", resetUI);
 encodeAnotherBtn.addEventListener("click", resetUI);
 outputFormatSelect.addEventListener("change", (e) => {
+  if (!checkCommandModification()) return;
   outputFormat = e.target.value;
   updateCommand();
 });
 videoCodecSelect.addEventListener("change", (e) => {
+  if (!checkCommandModification()) return;
   videoCodec = e.target.value;
+  updateQualityAndPresetOptions();
   updateFormatOptions();
   updateCommand();
 });
+videoQualitySelect.addEventListener("change", (e) => {
+  if (!checkCommandModification()) return;
+  videoQuality = e.target.value;
+  updateCommand();
+});
+videoPresetSelect.addEventListener("change", (e) => {
+  if (!checkCommandModification()) return;
+  videoPreset = e.target.value;
+  updateCommand();
+});
+
+// Track command modifications
+commandPreview.addEventListener("input", () => {
+  commandModified = true;
+});
 encodeBtn.addEventListener("click", startEncode);
+
+// Helper to check if command was modified and warn user
+function checkCommandModification() {
+  if (commandModified) {
+    const confirmed = confirm(
+      "This will undo your changes to the command. Are you sure?",
+    );
+    if (!confirmed) return false;
+    commandModified = false;
+  }
+  return true;
+}
 
 // Process file
 async function processFile(filePath) {
@@ -89,6 +124,7 @@ async function processFile(filePath) {
     displayFileInfo();
     displayAudioTracks();
     displaySubtitleTracks();
+    updateQualityAndPresetOptions();
     updateCommand();
 
     dropZone.classList.add("hidden");
@@ -154,13 +190,11 @@ function renderAudioTracks() {
     .map(
       (t, idx) => `
     <div class="track-item">
-      <label class="track-toggle">
-        <input type="checkbox" ${t.enabled ? "checked" : ""} onchange="toggleAudio(${idx}, this.checked)">
-        <span class="track-info">
-          <span class="track-name">${t.title || "Track " + (idx + 1)}</span>
-          <span class="track-meta">${t.language} · ${t.codec} · ${t.channels}ch</span>
-        </span>
-      </label>
+      <input type="checkbox" ${t.enabled ? "checked" : ""} onchange="toggleAudio(${idx}, this.checked)">
+      <div class="track-info">
+        <span class="track-name">${t.title || "Track " + (idx + 1)}</span>
+        <span class="track-meta">${t.language} · ${t.codec} · ${t.channels}ch</span>
+      </div>
       <select class="track-action" onchange="setAudioAction(${idx}, this.value)" ${!t.enabled ? "disabled" : ""}>
         <option value="copy" ${t.action === "copy" ? "selected" : ""}>Copy</option>
         <option value="aac" ${t.action === "aac" ? "selected" : ""}>AAC 192k</option>
@@ -215,13 +249,11 @@ function renderSubtitleTracks() {
     .map(
       (t, idx) => `
     <div class="track-item">
-      <label class="track-toggle">
-        <input type="checkbox" ${t.enabled ? "checked" : ""} onchange="toggleSubtitle(${idx}, this.checked)">
-        <span class="track-info">
-          <span class="track-name">${t.title || "Track " + (idx + 1)}</span>
-          <span class="track-meta">${t.language} · ${t.codec} · ${t.type}</span>
-        </span>
-      </label>
+      <input type="checkbox" ${t.enabled ? "checked" : ""} onchange="toggleSubtitle(${idx}, this.checked)">
+      <div class="track-info">
+        <span class="track-name">${t.title || "Track " + (idx + 1)}</span>
+        <span class="track-meta">${t.language} · ${t.codec} · ${t.type}</span>
+      </div>
       <select class="track-action" onchange="setSubtitleAction(${idx}, this.value)" ${!t.enabled ? "disabled" : ""}>
         <option value="copy" ${t.action === "copy" ? "selected" : ""}>Copy</option>
         ${!t.isImage ? `<option value="srt" ${t.action === "srt" ? "selected" : ""}>SRT</option>` : ""}
@@ -331,9 +363,51 @@ function updateCodecOptions() {
   }
 }
 
+// Update quality and preset options based on selected codec
+function updateQualityAndPresetOptions() {
+  const isNVENC = videoCodec === "hevc_nvenc" || videoCodec === "h264_nvenc";
+
+  if (isNVENC) {
+    // NVENC codecs use CQ for quality and have presets
+    videoQualitySelect.innerHTML = `
+      <option value="22">CQ 22 (Default)</option>
+      <option value="15">CQ 15 (High)</option>
+      <option value="28">CQ 28 (Medium)</option>
+      <option value="35">CQ 35 (Low)</option>
+    `;
+    videoPresetSelect.innerHTML = `
+      <option value="p4">P4 (Balance)</option>
+      <option value="p1">P1 (Fast)</option>
+      <option value="p7">P7 (Slow)</option>
+    `;
+  } else {
+    // VP9 and AV1 use CRF for quality
+    videoQualitySelect.innerHTML = `
+      <option value="22">CRF 22 (Default)</option>
+      <option value="15">CRF 15 (High)</option>
+      <option value="28">CRF 28 (Medium)</option>
+      <option value="35">CRF 35 (Low)</option>
+    `;
+    videoPresetSelect.innerHTML = `
+      <option value="5">Speed 5 (Balance)</option>
+      <option value="3">Speed 3 (Slow)</option>
+      <option value="8">Speed 8 (Fast)</option>
+    `;
+  }
+
+  videoQuality = videoQualitySelect.value;
+  videoPreset = videoPresetSelect.value;
+}
+
 // Update command preview
 function updateCommand() {
-  const parts = ['ffmpeg -i "input"', "-map 0:v"];
+  if (!currentFile) return;
+
+  const outputPath = getOutputPath(currentFile);
+  const inputFile = JSON.stringify(currentFile);
+  const outputFile = JSON.stringify(outputPath);
+
+  const parts = [`ffmpeg -i ${inputFile}`, "-map 0:v"];
 
   const enabledAudio = audioTracks.filter((t) => t.enabled);
   enabledAudio.forEach((t) => parts.push(`-map 0:${t.index}`));
@@ -344,11 +418,11 @@ function updateCommand() {
   // Add video codec with appropriate settings
   let videoCodecCmd = `-c:v ${videoCodec}`;
   if (videoCodec === "hevc_nvenc" || videoCodec === "h264_nvenc") {
-    videoCodecCmd += " -cq 22 -preset p4";
+    videoCodecCmd += ` -cq ${videoQuality} -preset ${videoPreset}`;
   } else if (videoCodec === "vp9") {
-    videoCodecCmd += " -crf 22";
+    videoCodecCmd += ` -crf ${videoQuality} -cpu-used ${videoPreset}`;
   } else if (videoCodec === "av1") {
-    videoCodecCmd += " -crf 22";
+    videoCodecCmd += ` -crf ${videoQuality} -cpu-used ${videoPreset}`;
   }
   parts.push(videoCodecCmd);
 
@@ -369,28 +443,43 @@ function updateCommand() {
     parts.push("-movflags +faststart");
   }
 
-  parts.push(`"output.${outputFormat}"`);
+  parts.push(outputFile);
   commandPreview.textContent = parts.join(" ");
+  commandModified = false;
 }
 
 // Start encoding
 async function startEncode() {
   if (!currentFile) return;
 
-  const outputPath = getOutputPath(currentFile);
-  const options = {
-    audioTracks: audioTracks.filter((t) => t.enabled),
-    subtitleTracks: subtitleTracks.filter((t) => t.enabled),
-    videoCodec: videoCodec,
-    outputFormat: outputFormat,
-  };
-
   settingsView.classList.add("hidden");
   progressView.classList.remove("hidden");
   encodeStartTime = Date.now();
 
   try {
-    await ipcRenderer.invoke("encode-video", currentFile, outputPath, options);
+    if (commandModified) {
+      // Use custom command from user edit
+      const customCommand = commandPreview.textContent.trim();
+      await ipcRenderer.invoke("encode-custom", customCommand);
+    } else {
+      // Use auto-generated command from options
+      const outputPath = getOutputPath(currentFile);
+      const options = {
+        audioTracks: audioTracks.filter((t) => t.enabled),
+        subtitleTracks: subtitleTracks.filter((t) => t.enabled),
+        videoCodec: videoCodec,
+        videoQuality: videoQuality,
+        videoPreset: videoPreset,
+        outputFormat: outputFormat,
+      };
+      await ipcRenderer.invoke(
+        "encode-video",
+        currentFile,
+        outputPath,
+        options,
+      );
+    }
+    const outputPath = getOutputPath(currentFile);
     showCompletion(outputPath);
   } catch (error) {
     alert("Error encoding: " + error.message);

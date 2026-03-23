@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
+const { spawn } = require("child_process");
 
 let mainWindow;
 
@@ -154,3 +155,99 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
     command.run();
   });
 });
+
+// Handle custom ffmpeg commands
+ipcMain.handle("encode-custom", (event, commandString) => {
+  return new Promise((resolve, reject) => {
+    // Parse the command string to extract the actual ffmpeg arguments
+    // The command comes as: ffmpeg -i "input" ... "output"
+    // We need to split it properly, respecting quoted strings
+
+    const args = parseCommandString(commandString);
+
+    // Remove 'ffmpeg' from the beginning if present
+    if (args[0] === "ffmpeg") {
+      args.shift();
+    }
+
+    const ffmpegProcess = spawn("ffmpeg", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stderr = "";
+
+    ffmpegProcess.stderr.on("data", (data) => {
+      stderr += data.toString();
+
+      // Parse progress from stderr
+      const match = stderr.match(
+        /frame=\s*(\d+)\s+fps=\s*([\d.]+)\s+q=[\d.-]+\s+Lsize=\s*(\d+)/,
+      );
+      if (match) {
+        const frame = parseInt(match[1]);
+        const fps = parseFloat(match[2]);
+        event.sender.send("encode-progress", {
+          frame,
+          currentFps: fps,
+          percent: Math.min(95, (frame / 1000) * 100),
+        });
+      }
+    });
+
+    ffmpegProcess.on("close", (code) => {
+      if (code === 0) {
+        event.sender.send("encode-started", { commandLine: commandString });
+        resolve({ success: true });
+      } else {
+        reject(new Error(`FFmpeg exited with code ${code}: ${stderr}`));
+      }
+    });
+
+    ffmpegProcess.on("error", (err) => {
+      reject(err);
+    });
+  });
+});
+
+// Parse command string respecting quoted arguments
+function parseCommandString(input) {
+  const args = [];
+  let current = "";
+  let inQuotes = false;
+  let quoteChar = "";
+
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i];
+
+    if ((char === '"' || char === "'") && (i === 0 || input[i - 1] !== "\\")) {
+      if (!inQuotes) {
+        inQuotes = true;
+        quoteChar = char;
+      } else if (char === quoteChar) {
+        inQuotes = false;
+      }
+    } else if (char === " " && !inQuotes) {
+      if (current) {
+        args.push(current);
+        current = "";
+      }
+    } else {
+      current += char;
+    }
+  }
+
+  if (current) {
+    args.push(current);
+  }
+
+  // Remove quotes from arguments
+  return args.map((arg) => {
+    if (
+      (arg.startsWith('"') && arg.endsWith('"')) ||
+      (arg.startsWith("'") && arg.endsWith("'"))
+    ) {
+      return arg.slice(1, -1);
+    }
+    return arg;
+  });
+}

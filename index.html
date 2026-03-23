@@ -71,11 +71,28 @@
             </div>
             <div class="info-row">
               <span class="info-label">Quality</span>
-              <span class="info-value">CQ 22</span>
+              <select
+                id="videoQuality"
+                class="info-value-select"
+                onchange="updateCommand()"
+              >
+                <option value="22">CQ 22 (Default)</option>
+                <option value="15">CQ 15 (High)</option>
+                <option value="28">CQ 28 (Medium)</option>
+                <option value="35">CQ 35 (Low)</option>
+              </select>
             </div>
             <div class="info-row">
               <span class="info-label">Preset</span>
-              <span class="info-value">P4</span>
+              <select
+                id="videoPreset"
+                class="info-value-select"
+                onchange="updateCommand()"
+              >
+                <option value="p4">P4 (Balance)</option>
+                <option value="p1">P1 (Fast)</option>
+                <option value="p7">P7 (Slow)</option>
+              </select>
             </div>
             <div class="info-row">
               <span class="info-label">Format</span>
@@ -116,7 +133,11 @@
           <div class="panel-header">
             <h2>Command</h2>
           </div>
-          <code id="commandPreview" class="command-preview"></code>
+          <code
+            id="commandPreview"
+            class="command-preview"
+            contenteditable="true"
+          ></code>
         </section>
 
         <!-- Encode Button -->
