@@ -47,10 +47,12 @@
         "nsis"
       ],
       "icon": "assets/icon.ico",
-      "artifactName": "${productName}-${version}-${arch}.${ext}",
       "signAndEditExecutable": false,
       "certificateFile": null,
       "certificatePassword": null
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-${arch}-portable.${ext}"
     },
     "nsis": {
       "oneClick": false,
