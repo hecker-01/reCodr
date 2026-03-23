@@ -4,9 +4,11 @@ A desktop application for re-encoding video files using ffmpeg with HEVC (H.265)
 
 ## Features
 
-✨ **Drag & Drop Interface** - Simply drag video files into the window  
+✨ **Drag & Drop Interface** - Simply drag video files into the window (supports MKV, MP4, AVI, MOV, and more)  
 📊 **Video Information** - Shows detailed metadata using ffprobe (resolution, codec, bitrate, duration)  
 ⚙️ **Smart Encoding** - Uses HEVC NVENC for hardware-accelerated encoding  
+🔊 **Multi-Track Audio** - Select which audio tracks to include, with options to copy or re-encode to AAC/Opus/AC3  
+💬 **Multi-Track Subtitles** - Select subtitle tracks with options to copy or convert to SRT/ASS  
 📈 **Progress Tracking** - Real-time progress bar with percentage, ETA, FPS, and speed  
 💾 **File Comparison** - Shows size difference between original and encoded file  
 
@@ -16,10 +18,26 @@ The application uses optimized ffmpeg settings:
 - **Video Codec:** HEVC (H.265) with NVIDIA NVENC hardware acceleration
 - **Quality:** CQ 22 (high quality)
 - **Preset:** P4 (medium speed, good quality/speed balance)
-- **Audio:** Copy (no re-encode)
-- **Subtitles:** Copy (no re-encode)
+- **Audio Options:** Copy, AAC (192k), Opus (128k), AC3 (384k)
+- **Subtitle Options:** Copy, SRT, ASS, MOV Text
 
-Command: `ffmpeg -i "input.mkv" -map 0 -c:v hevc_nvenc -cq 22 -preset p4 -c:a copy -c:s copy "output.mkv"`
+## Audio & Subtitle Track Options
+
+### Audio Re-encoding
+| Option | Description |
+|--------|-------------|
+| Copy | No re-encoding, preserves original quality |
+| AAC | Re-encode to AAC at 192kbps (best compatibility) |
+| Opus | Re-encode to Opus at 128kbps (best quality/size) |
+| AC3 | Re-encode to AC3 at 384kbps (Dolby Digital) |
+
+### Subtitle Conversion
+| Option | Description |
+|--------|-------------|
+| Copy | Keep original format |
+| SRT | Convert to SubRip (text-based only) |
+| ASS | Convert to Advanced SubStation (text-based only) |
+| MOV Text | Convert for MP4/MOV compatibility |
 
 ## Requirements
 

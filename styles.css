@@ -257,3 +257,144 @@ code.setting-value {
   background: #667eea;
   color: white;
 }
+
+/* Track sections */
+.tracks-section {
+  margin-top: 25px;
+  padding-top: 20px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.tracks-section h2 {
+  font-size: 1.3em;
+  margin-bottom: 15px;
+}
+
+.tracks-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.track-item {
+  background: #f8f9ff;
+  border-radius: 8px;
+  padding: 15px;
+  border: 1px solid #e0e0e0;
+  transition: border-color 0.2s;
+}
+
+.track-item:hover {
+  border-color: #667eea;
+}
+
+.track-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.track-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.track-checkbox input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #667eea;
+}
+
+.track-title {
+  font-weight: 600;
+  color: #333;
+}
+
+.track-badge {
+  background: #667eea;
+  color: white;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.8em;
+  font-weight: 600;
+}
+
+.track-details {
+  display: flex;
+  gap: 12px;
+  font-size: 0.9em;
+  color: #666;
+  margin-bottom: 10px;
+}
+
+.track-details span {
+  background: #e8e8e8;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.badge-warn {
+  background: #ffc107 !important;
+  color: #333 !important;
+}
+
+.badge-ok {
+  background: #28a745 !important;
+  color: white !important;
+}
+
+.track-action {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.track-action label {
+  font-size: 0.9em;
+  color: #555;
+  font-weight: 500;
+}
+
+.track-action select {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 0.9em;
+  background: white;
+  cursor: pointer;
+}
+
+.track-action select:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+}
+
+/* Command preview */
+.command-preview {
+  margin-top: 25px;
+  padding-top: 20px;
+  border-top: 1px solid #e0e0e0;
+}
+
+.command-preview h3 {
+  font-size: 1em;
+  color: #555;
+  margin-bottom: 10px;
+}
+
+.command-code {
+  display: block;
+  background: #2d2d2d;
+  color: #f8f8f2;
+  padding: 15px;
+  border-radius: 8px;
+  font-size: 0.85em;
+  word-break: break-all;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}

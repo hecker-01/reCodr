@@ -6,14 +6,19 @@ let mainWindow;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1000,
-    height: 700,
+    width: 1100,
+    height: 900,
+    backgroundColor: '#1a1a2e',
     webPreferences: {
       nodeIntegration: true,
-      contextIsolation: false
+      contextIsolation: false,
+      backgroundThrottling: false
     },
     icon: path.join(__dirname, 'assets', 'icon.png')
   });
+
+  // Prevent throttling when minimized or in background
+  mainWindow.webContents.setBackgroundThrottling(false);
 
   mainWindow.loadFile('index.html');
   
@@ -54,18 +59,73 @@ ipcMain.handle('get-video-info', async (event, filePath) => {
   });
 });
 
-ipcMain.handle('encode-video', (event, inputPath, outputPath) => {
+ipcMain.handle('encode-video', (event, inputPath, outputPath, options = {}) => {
   return new Promise((resolve, reject) => {
-    const command = ffmpeg(inputPath)
-      .outputOptions([
-        '-map 0',
-        '-c:v hevc_nvenc',
-        '-cq 22',
-        '-preset p4',
-        '-c:a copy',
-        '-c:s copy'
-      ])
-      .output(outputPath);
+    const command = ffmpeg(inputPath);
+    
+    const outputOptions = [];
+    
+    // Map video stream
+    outputOptions.push('-map 0:v');
+    
+    // Map enabled audio tracks
+    const audioTracks = options.audioTracks || [];
+    audioTracks.forEach(t => {
+      outputOptions.push(`-map 0:${t.index}`);
+    });
+    
+    // Map enabled subtitle tracks
+    const subtitleTracks = options.subtitleTracks || [];
+    subtitleTracks.forEach(t => {
+      outputOptions.push(`-map 0:${t.index}`);
+    });
+    
+    // Video encoding settings
+    outputOptions.push('-c:v hevc_nvenc');
+    outputOptions.push('-cq 22');
+    outputOptions.push('-preset p4');
+    
+    // Audio codec settings per track
+    audioTracks.forEach((t, idx) => {
+      if (t.action === 'copy') {
+        outputOptions.push(`-c:a:${idx} copy`);
+      } else if (t.action === 'aac') {
+        outputOptions.push(`-c:a:${idx} aac`);
+        outputOptions.push(`-b:a:${idx} 192k`);
+      } else if (t.action === 'opus') {
+        outputOptions.push(`-c:a:${idx} libopus`);
+        outputOptions.push(`-b:a:${idx} 128k`);
+      } else if (t.action === 'ac3') {
+        outputOptions.push(`-c:a:${idx} ac3`);
+        outputOptions.push(`-b:a:${idx} 384k`);
+      }
+    });
+    
+    // Subtitle codec settings per track
+    subtitleTracks.forEach((t, idx) => {
+      if (t.action === 'copy') {
+        outputOptions.push(`-c:s:${idx} copy`);
+      } else if (t.action === 'srt') {
+        outputOptions.push(`-c:s:${idx} srt`);
+      } else if (t.action === 'ass') {
+        outputOptions.push(`-c:s:${idx} ass`);
+      } else if (t.action === 'mov_text') {
+        outputOptions.push(`-c:s:${idx} mov_text`);
+      }
+    });
+    
+    // If no tracks specified, fall back to copy all
+    if (audioTracks.length === 0 && subtitleTracks.length === 0) {
+      outputOptions.length = 0;
+      outputOptions.push('-map 0');
+      outputOptions.push('-c:v hevc_nvenc');
+      outputOptions.push('-cq 22');
+      outputOptions.push('-preset p4');
+      outputOptions.push('-c:a copy');
+      outputOptions.push('-c:s copy');
+    }
+    
+    command.outputOptions(outputOptions).output(outputPath);
 
     command.on('start', (commandLine) => {
       console.log('FFmpeg command:', commandLine);
