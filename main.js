@@ -2,6 +2,12 @@ const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const ffmpeg = require("fluent-ffmpeg");
 const { spawn } = require("child_process");
+const ffmpegStatic = require("ffmpeg-static");
+const ffprobeStatic = require("ffprobe-static");
+
+// Set ffmpeg and ffprobe paths for bundled binaries
+ffmpeg.setFfmpegPath(ffmpegStatic.path);
+ffmpeg.setFfprobePath(ffprobeStatic.path);
 
 let mainWindow;
 
