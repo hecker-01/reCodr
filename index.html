@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Re-Encoder</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <div class="header">
+      <h1>🎬 Video Re-Encoder</h1>
+      <p class="subtitle">Drag and drop video files to re-encode with HEVC</p>
+    </div>
+
+    <div id="dropZone" class="drop-zone">
+      <div class="drop-content">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="17 8 12 3 7 8"></polyline>
+          <line x1="12" y1="3" x2="12" y2="15"></line>
+        </svg>
+        <p>Drop video files here</p>
+        <p class="small">or click to browse</p>
+      </div>
+      <input type="file" id="fileInput" accept="video/*,.mkv,.avi,.mov,.mp4,.webm,.flv,.wmv,.m4v,.ts,.mts" style="display: none;">
+    </div>
+
+    <div id="videoInfo" class="video-info hidden">
+      <h2>📹 Video Information</h2>
+      <div id="infoContent" class="info-grid"></div>
+    </div>
+
+    <div id="encodingSettings" class="encoding-settings hidden">
+      <h2>⚙️ Video Settings</h2>
+      <div class="settings-grid">
+        <div class="setting-item">
+          <span class="setting-label">Video Codec:</span>
+          <span class="setting-value">HEVC (H.265) with NVENC</span>
+        </div>
+        <div class="setting-item">
+          <span class="setting-label">Quality (CQ):</span>
+          <span class="setting-value">22 (High Quality)</span>
+        </div>
+        <div class="setting-item">
+          <span class="setting-label">Preset:</span>
+          <span class="setting-value">P4 (Medium Speed)</span>
+        </div>
+      </div>
+
+      <div id="audioTracksSection" class="tracks-section hidden">
+        <h2>🔊 Audio Tracks</h2>
+        <div id="audioTracksContent" class="tracks-grid"></div>
+      </div>
+
+      <div id="subtitleTracksSection" class="tracks-section hidden">
+        <h2>💬 Subtitle Tracks</h2>
+        <div id="subtitleTracksContent" class="tracks-grid"></div>
+      </div>
+
+      <div class="command-preview">
+        <h3>Command Preview:</h3>
+        <code id="commandPreview" class="command-code">ffmpeg -i "input" -map 0 -c:v hevc_nvenc -cq 22 -preset p4 -c:a copy -c:s copy "output"</code>
+      </div>
+      
+      <button id="encodeBtn" class="encode-button">
+        <span>🚀 Start Encoding</span>
+      </button>
+    </div>
+
+    <div id="progressSection" class="progress-section hidden">
+      <h2>⏳ Encoding Progress</h2>
+      <div class="progress-container">
+        <div class="progress-bar">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+        <div class="progress-text">
+          <span id="progressPercent">0%</span>
+        </div>
+      </div>
+      <div class="progress-details">
+        <div class="detail-item">
+          <span class="detail-label">Time Elapsed:</span>
+          <span id="timeElapsed" class="detail-value">0s</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">ETA:</span>
+          <span id="eta" class="detail-value">Calculating...</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">Speed:</span>
+          <span id="speed" class="detail-value">-</span>
+        </div>
+        <div class="detail-item">
+          <span class="detail-label">FPS:</span>
+          <span id="fps" class="detail-value">-</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="completionSection" class="completion-section hidden">
+      <div class="completion-content">
+        <div class="success-icon">✅</div>
+        <h2>Encoding Complete!</h2>
+        <p id="outputPath" class="output-path"></p>
+        <button id="encodeAnotherBtn" class="secondary-button">Encode Another Video</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

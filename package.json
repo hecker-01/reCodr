@@ -1,0 +1,19 @@
+{
+  "name": "encdr",
+  "version": "1.0.0",
+  "description": "Video re-encoder with GUI using ffmpeg",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "keywords": ["video", "encoder", "ffmpeg", "electron"],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "fluent-ffmpeg": "^2.1.2"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0"
+  }
+}
