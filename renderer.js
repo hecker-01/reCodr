@@ -73,7 +73,7 @@ fileInput.addEventListener("change", (e) => {
   }
 });
 changeFileBtn.addEventListener("click", resetUI);
-encodeAnotherBtn.addEventListener("click", resetUI);
+encodeAnotherBtn.addEventListener("click", () => location.reload());
 outputFormatSelect.addEventListener("change", (e) => {
   if (!checkCommandModification()) return;
   outputFormat = e.target.value;
@@ -117,10 +117,13 @@ function checkCommandModification() {
 
 // Process file
 async function processFile(filePath) {
+  console.log("Processing file:", filePath);
   currentFile = filePath;
 
   try {
+    console.log("Calling get-video-info...");
     metadata = await ipcRenderer.invoke("get-video-info", filePath);
+    console.log("Got metadata:", metadata);
     displayFileInfo();
     displayAudioTracks();
     displaySubtitleTracks();
@@ -130,7 +133,9 @@ async function processFile(filePath) {
     dropZone.classList.add("hidden");
     settingsView.classList.remove("hidden");
   } catch (error) {
+    console.error("Error processing file:", error);
     alert("Error reading video file: " + error.message);
+    currentFile = null;
   }
 }
 
@@ -455,15 +460,18 @@ async function startEncode() {
   settingsView.classList.add("hidden");
   progressView.classList.remove("hidden");
   encodeStartTime = Date.now();
+  console.log("Starting encode for:", currentFile);
 
   try {
     if (commandModified) {
       // Use custom command from user edit
       const customCommand = commandPreview.textContent.trim();
+      console.log("Using custom command:", customCommand);
       await ipcRenderer.invoke("encode-custom", customCommand);
     } else {
       // Use auto-generated command from options
       const outputPath = getOutputPath(currentFile);
+      console.log("Encoding to:", outputPath);
       const options = {
         audioTracks: audioTracks.filter((t) => t.enabled),
         subtitleTracks: subtitleTracks.filter((t) => t.enabled),
@@ -480,8 +488,10 @@ async function startEncode() {
       );
     }
     const outputPath = getOutputPath(currentFile);
+    console.log("Encode completed successfully");
     showCompletion(outputPath);
   } catch (error) {
+    console.error("Encoding error:", error);
     alert("Error encoding: " + error.message);
     settingsView.classList.remove("hidden");
     progressView.classList.add("hidden");
@@ -517,17 +527,29 @@ function showCompletion(outputPath) {
 
   document.getElementById("outputPath").textContent = outputPath;
 
-  if (fs.existsSync(outputPath) && currentFile) {
-    const inputSize = fs.statSync(currentFile).size / (1024 * 1024);
-    const outputSize = fs.statSync(outputPath).size / (1024 * 1024);
-    const savings = ((1 - outputSize / inputSize) * 100).toFixed(1);
+  try {
+    if (fs.existsSync(outputPath) && currentFile) {
+      const inputSize = fs.statSync(currentFile).size / (1024 * 1024);
+      const outputSize = fs.statSync(outputPath).size / (1024 * 1024);
+      const savings = ((1 - outputSize / inputSize) * 100).toFixed(1);
 
-    document.getElementById("sizeComparison").innerHTML = `
-      <span>${inputSize.toFixed(2)} MB</span>
-      <span class="arrow">→</span>
-      <span>${outputSize.toFixed(2)} MB</span>
-      <span class="savings ${savings > 0 ? "positive" : ""}">${savings > 0 ? "-" : "+"}${Math.abs(savings)}%</span>
-    `;
+      document.getElementById("sizeComparison").innerHTML = `
+        <span>${inputSize.toFixed(2)} MB</span>
+        <span class="arrow">→</span>
+        <span>${outputSize.toFixed(2)} MB</span>
+        <span class="savings ${savings > 0 ? "positive" : ""}">${savings > 0 ? "-" : "+"}${Math.abs(savings)}%</span>
+      `;
+    } else {
+      console.warn("Output file not found or currentFile is null:", {
+        outputPath,
+        currentFile,
+        exists: fs.existsSync(outputPath),
+      });
+      document.getElementById("sizeComparison").innerHTML = "";
+    }
+  } catch (error) {
+    console.error("Error displaying completion stats:", error);
+    document.getElementById("sizeComparison").innerHTML = "";
   }
 }
 

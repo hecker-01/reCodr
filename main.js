@@ -1,13 +1,8 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
-const ffmpeg = require("fluent-ffmpeg");
 const { spawn } = require("child_process");
 const ffmpegStatic = require("ffmpeg-static");
 const ffprobeStatic = require("ffprobe-static");
-
-// Set ffmpeg and ffprobe paths for bundled binaries
-ffmpeg.setFfmpegPath(ffmpegStatic.path);
-ffmpeg.setFfprobePath(ffprobeStatic.path);
 
 let mainWindow;
 
@@ -21,7 +16,15 @@ function createWindow() {
       contextIsolation: false,
       backgroundThrottling: false,
     },
-    icon: path.join(__dirname, "assets", "icon.png"),
+    icon: path.join(
+      __dirname,
+      "assets",
+      process.platform === "win32"
+        ? "icon.ico"
+        : process.platform === "darwin"
+          ? "icon.icns"
+          : "icon.png",
+    ),
   });
 
   // Prevent throttling when minimized or in background
@@ -56,11 +59,57 @@ app.on("activate", () => {
 // IPC handlers for video processing
 ipcMain.handle("get-video-info", async (event, filePath) => {
   return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(filePath, (err, metadata) => {
-      if (err) {
-        reject(err);
+    const ffprobePath = ffprobeStatic.path;
+    let timedOut = false;
+
+    const ffprobeProcess = spawn(ffprobePath, [
+      "-v",
+      "error",
+      "-print_format",
+      "json",
+      "-show_format",
+      "-show_streams",
+      filePath,
+    ]);
+
+    let stdout = "";
+    let stderr = "";
+
+    // Kill process if it hangs for more than 30 seconds
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      ffprobeProcess.kill("SIGKILL");
+      reject(new Error("ffprobe timed out after 30 seconds"));
+    }, 30000);
+
+    ffprobeProcess.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    ffprobeProcess.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    ffprobeProcess.on("error", (err) => {
+      clearTimeout(timeout);
+      if (!timedOut) {
+        reject(new Error(`Failed to spawn ffprobe: ${err.message}`));
+      }
+    });
+
+    ffprobeProcess.on("close", (code) => {
+      clearTimeout(timeout);
+      if (timedOut) return;
+      
+      if (code === 0) {
+        try {
+          const metadata = JSON.parse(stdout);
+          resolve(metadata);
+        } catch (err) {
+          reject(new Error(`Failed to parse ffprobe output: ${err.message}`));
+        }
       } else {
-        resolve(metadata);
+        reject(new Error(`ffprobe failed with code ${code}: ${stderr}`));
       }
     });
   });
@@ -68,97 +117,141 @@ ipcMain.handle("get-video-info", async (event, filePath) => {
 
 ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
   return new Promise((resolve, reject) => {
-    const command = ffmpeg(inputPath);
-
-    const outputOptions = [];
+    const args = ["-i", inputPath];
 
     // Map video stream
-    outputOptions.push("-map 0:v");
+    args.push("-map", "0:v");
 
     // Map enabled audio tracks
     const audioTracks = options.audioTracks || [];
     audioTracks.forEach((t) => {
-      outputOptions.push(`-map 0:${t.index}`);
+      args.push("-map", `0:${t.index}`);
     });
 
     // Map enabled subtitle tracks
     const subtitleTracks = options.subtitleTracks || [];
     subtitleTracks.forEach((t) => {
-      outputOptions.push(`-map 0:${t.index}`);
+      args.push("-map", `0:${t.index}`);
     });
 
     // Get video codec settings
     const videoCodec = options.videoCodec || "hevc_nvenc";
-    outputOptions.push(`-c:v ${videoCodec}`);
+    args.push("-c:v", videoCodec);
 
     // Apply codec-specific quality settings
     if (videoCodec === "hevc_nvenc" || videoCodec === "h264_nvenc") {
-      outputOptions.push("-cq 22");
-      outputOptions.push("-preset p4");
+      args.push("-cq", "22");
+      args.push("-preset", "p4");
     } else if (videoCodec === "vp9" || videoCodec === "av1") {
-      outputOptions.push("-crf 22");
+      args.push("-crf", "22");
     }
 
     // Audio codec settings per track
     audioTracks.forEach((t, idx) => {
       if (t.action === "copy") {
-        outputOptions.push(`-c:a:${idx} copy`);
+        args.push(`-c:a:${idx}`, "copy");
       } else if (t.action === "aac") {
-        outputOptions.push(`-c:a:${idx} aac`);
-        outputOptions.push(`-b:a:${idx} 192k`);
+        args.push(`-c:a:${idx}`, "aac");
+        args.push(`-b:a:${idx}`, "192k");
       } else if (t.action === "opus") {
-        outputOptions.push(`-c:a:${idx} libopus`);
-        outputOptions.push(`-b:a:${idx} 128k`);
+        args.push(`-c:a:${idx}`, "libopus");
+        args.push(`-b:a:${idx}`, "128k");
       } else if (t.action === "ac3") {
-        outputOptions.push(`-c:a:${idx} ac3`);
-        outputOptions.push(`-b:a:${idx} 384k`);
+        args.push(`-c:a:${idx}`, "ac3");
+        args.push(`-b:a:${idx}`, "384k");
       }
     });
 
     // Subtitle codec settings per track
     subtitleTracks.forEach((t, idx) => {
       if (t.action === "copy") {
-        outputOptions.push(`-c:s:${idx} copy`);
+        args.push(`-c:s:${idx}`, "copy");
       } else if (t.action === "srt") {
-        outputOptions.push(`-c:s:${idx} srt`);
+        args.push(`-c:s:${idx}`, "srt");
       } else if (t.action === "ass") {
-        outputOptions.push(`-c:s:${idx} ass`);
+        args.push(`-c:s:${idx}`, "ass");
       } else if (t.action === "mov_text") {
-        outputOptions.push(`-c:s:${idx} mov_text`);
+        args.push(`-c:s:${idx}`, "mov_text");
       }
     });
 
     // If no tracks specified, fall back to copy all
     if (audioTracks.length === 0 && subtitleTracks.length === 0) {
-      outputOptions.length = 0;
-      outputOptions.push("-map 0");
-      outputOptions.push("-c:v hevc_nvenc");
-      outputOptions.push("-cq 22");
-      outputOptions.push("-preset p4");
-      outputOptions.push("-c:a copy");
-      outputOptions.push("-c:s copy");
+      args.length = 2; // Reset to just -i inputPath
+      args.push("-map", "0");
+      args.push("-c:v", "hevc_nvenc");
+      args.push("-cq", "22");
+      args.push("-preset", "p4");
+      args.push("-c:a", "copy");
+      args.push("-c:s", "copy");
     }
 
-    command.outputOptions(outputOptions).output(outputPath);
+    // Add progress output
+    args.push("-progress", "pipe:1");
+    args.push(outputPath);
 
-    command.on("start", (commandLine) => {
-      console.log("FFmpeg command:", commandLine);
-      event.sender.send("encode-started", { commandLine });
+    const ffmpegPath = ffmpegStatic.path;
+    console.log("Starting ffmpeg at:", ffmpegPath);
+    console.log("Command args:", args);
+
+    const ffmpegProcess = spawn(ffmpegPath, args, {
+      stdio: ["ignore", "pipe", "pipe"],
     });
 
-    command.on("progress", (progress) => {
-      event.sender.send("encode-progress", progress);
+    let totalDuration = 0;
+    let startTime = Date.now();
+
+    ffmpegProcess.stderr.on("data", (data) => {
+      const stderr = data.toString();
+      console.log("FFmpeg stderr:", stderr);
+
+      // Parse duration from ffmpeg output
+      const durationMatch = stderr.match(/Duration: (\d+):(\d+):(\d+\.\d+)/);
+      if (durationMatch && totalDuration === 0) {
+        const hours = parseInt(durationMatch[1]);
+        const minutes = parseInt(durationMatch[2]);
+        const seconds = parseFloat(durationMatch[3]);
+        totalDuration = hours * 3600 + minutes * 60 + seconds;
+        console.log("Total duration:", totalDuration, "seconds");
+      }
     });
 
-    command.on("end", () => {
-      resolve({ success: true });
+    ffmpegProcess.stdout.on("data", (data) => {
+      const output = data.toString();
+
+      // Parse progress output
+      const lines = output.split("\n");
+      for (const line of lines) {
+        if (line.startsWith("out_time_ms=")) {
+          const timeMs = parseInt(line.split("=")[1]);
+          if (timeMs > 0 && totalDuration > 0) {
+            const currentTime = timeMs / 1000000; // Convert microseconds to seconds
+            const percent = Math.min(99, (currentTime / totalDuration) * 100);
+
+            event.sender.send("encode-progress", {
+              percent,
+              currentFps: 0,
+              currentKbps: 0,
+            });
+          }
+        }
+      }
     });
 
-    command.on("error", (err) => {
-      reject(err);
+    ffmpegProcess.on("error", (err) => {
+      console.error("FFmpeg process error:", err);
+      reject(new Error(`Failed to spawn ffmpeg: ${err.message}`));
     });
 
-    command.run();
+    ffmpegProcess.on("close", (code) => {
+      console.log("FFmpeg process closed with code:", code);
+      if (code === 0) {
+        event.sender.send("encode-progress", { percent: 100, currentFps: 0, currentKbps: 0 });
+        resolve({ success: true });
+      } else {
+        reject(new Error(`ffmpeg failed with code ${code}`));
+      }
+    });
   });
 });
 
@@ -176,40 +269,73 @@ ipcMain.handle("encode-custom", (event, commandString) => {
       args.shift();
     }
 
-    const ffmpegProcess = spawn("ffmpeg", args, {
+    // Add progress reporting if not already present
+    if (!args.includes("-progress")) {
+      args.push("-progress", "pipe:1");
+    }
+
+    const ffmpegPath = ffmpegStatic.path;
+    console.log("Starting custom ffmpeg at:", ffmpegPath);
+
+    const ffmpegProcess = spawn(ffmpegPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    let stderr = "";
+    let totalDuration = 0;
 
     ffmpegProcess.stderr.on("data", (data) => {
-      stderr += data.toString();
+      const stderr = data.toString();
+      console.log("FFmpeg stderr:", stderr);
 
-      // Parse progress from stderr
-      const match = stderr.match(
-        /frame=\s*(\d+)\s+fps=\s*([\d.]+)\s+q=[\d.-]+\s+Lsize=\s*(\d+)/,
-      );
-      if (match) {
-        const frame = parseInt(match[1]);
-        const fps = parseFloat(match[2]);
-        event.sender.send("encode-progress", {
-          frame,
-          currentFps: fps,
-          percent: Math.min(95, (frame / 1000) * 100),
-        });
+      // Parse duration from ffmpeg output
+      const durationMatch = stderr.match(/Duration: (\d+):(\d+):(\d+\.\d+)/);
+      if (durationMatch && totalDuration === 0) {
+        const hours = parseInt(durationMatch[1]);
+        const minutes = parseInt(durationMatch[2]);
+        const seconds = parseFloat(durationMatch[3]);
+        totalDuration = hours * 3600 + minutes * 60 + seconds;
+        console.log("Total duration:", totalDuration, "seconds");
+      }
+    });
+
+    ffmpegProcess.stdout.on("data", (data) => {
+      const output = data.toString();
+
+      // Parse progress output
+      const lines = output.split("\n");
+      for (const line of lines) {
+        if (line.startsWith("out_time_ms=")) {
+          const timeMs = parseInt(line.split("=")[1]);
+          if (timeMs > 0 && totalDuration > 0) {
+            const currentTime = timeMs / 1000000; // Convert microseconds to seconds
+            const percent = Math.min(99, (currentTime / totalDuration) * 100);
+
+            event.sender.send("encode-progress", {
+              percent,
+              currentFps: 0,
+              currentKbps: 0,
+            });
+          }
+        }
       }
     });
 
     ffmpegProcess.on("close", (code) => {
+      console.log("Custom ffmpeg process closed with code:", code);
       if (code === 0) {
-        event.sender.send("encode-started", { commandLine: commandString });
+        event.sender.send("encode-progress", { percent: 100, currentFps: 0, currentKbps: 0 });
         resolve({ success: true });
       } else {
-        reject(new Error(`FFmpeg exited with code ${code}: ${stderr}`));
+        reject(new Error(`FFmpeg exited with code ${code}`));
       }
     });
 
     ffmpegProcess.on("error", (err) => {
+      console.error("Custom ffmpeg process error:", err);
+      reject(new Error(`Failed to spawn ffmpeg: ${err.message}`));
+    });
+  });
+});
       reject(err);
     });
   });

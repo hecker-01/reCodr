@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Release files
+release/
+
 # Build outputs
 dist/
 out/

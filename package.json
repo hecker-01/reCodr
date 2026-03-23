@@ -6,8 +6,8 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "build": "electron-builder",
-    "build:win": "electron-builder --win",
+    "build": "set CSC_IDENTITY_AUTO_DISCOVERY=false && electron-builder",
+    "build:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false && electron-builder --win",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux"
   },
@@ -20,8 +20,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "fluent-ffmpeg": "^2.1.2",
-    "ffmpeg-static": "^5.1.0",
+    "ffmpeg-static": "^5.3.0",
     "ffprobe-static": "^3.1.0"
   },
   "devDependencies": {
@@ -32,7 +31,8 @@
     "appId": "com.encdr.app",
     "productName": "ENCDR",
     "directories": {
-      "buildResources": "assets"
+      "buildResources": "assets",
+      "output": "release"
     },
     "files": [
       "main.js",
@@ -44,22 +44,34 @@
     "win": {
       "target": [
         "portable",
-        "installer"
+        "nsis"
       ],
+      "icon": "assets/icon.ico",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "signAndEditExecutable": false,
       "certificateFile": null,
       "certificatePassword": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico"
     },
     "mac": {
       "target": [
         "dmg",
         "zip"
-      ]
+      ],
+      "icon": "assets/icon.icns"
     },
     "linux": {
       "target": [
         "AppImage",
         "deb"
-      ]
+      ],
+      "icon": "assets/icon.png"
     }
   }
 }
