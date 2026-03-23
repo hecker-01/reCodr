@@ -3,108 +3,139 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Video Re-Encoder</title>
+  <title>ENCDR</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div id="app">
-    <div class="header">
-      <h1>🎬 Video Re-Encoder</h1>
-      <p class="subtitle">Drag and drop video files to re-encode with HEVC</p>
-    </div>
+    <header class="app-header">
+      <h1>ENCDR</h1>
+      <span class="version">Video Re-Encoder</span>
+    </header>
 
+    <!-- Drop Zone -->
     <div id="dropZone" class="drop-zone">
       <div class="drop-content">
-        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
           <polyline points="17 8 12 3 7 8"></polyline>
           <line x1="12" y1="3" x2="12" y2="15"></line>
         </svg>
-        <p>Drop video files here</p>
-        <p class="small">or click to browse</p>
+        <p class="drop-title">Drop video file here</p>
+        <p class="drop-subtitle">or click to browse</p>
       </div>
       <input type="file" id="fileInput" accept="video/*,.mkv,.avi,.mov,.mp4,.webm,.flv,.wmv,.m4v,.ts,.mts" style="display: none;">
     </div>
 
-    <div id="videoInfo" class="video-info hidden">
-      <h2>📹 Video Information</h2>
-      <div id="infoContent" class="info-grid"></div>
-    </div>
-
-    <div id="encodingSettings" class="encoding-settings hidden">
-      <h2>⚙️ Video Settings</h2>
-      <div class="settings-grid">
-        <div class="setting-item">
-          <span class="setting-label">Video Codec:</span>
-          <span class="setting-value">HEVC (H.265) with NVENC</span>
-        </div>
-        <div class="setting-item">
-          <span class="setting-label">Quality (CQ):</span>
-          <span class="setting-value">22 (High Quality)</span>
-        </div>
-        <div class="setting-item">
-          <span class="setting-label">Preset:</span>
-          <span class="setting-value">P4 (Medium Speed)</span>
-        </div>
-      </div>
-
-      <div id="audioTracksSection" class="tracks-section hidden">
-        <h2>🔊 Audio Tracks</h2>
-        <div id="audioTracksContent" class="tracks-grid"></div>
-      </div>
-
-      <div id="subtitleTracksSection" class="tracks-section hidden">
-        <h2>💬 Subtitle Tracks</h2>
-        <div id="subtitleTracksContent" class="tracks-grid"></div>
-      </div>
-
-      <div class="command-preview">
-        <h3>Command Preview:</h3>
-        <code id="commandPreview" class="command-code">ffmpeg -i "input" -map 0 -c:v hevc_nvenc -cq 22 -preset p4 -c:a copy -c:s copy "output"</code>
-      </div>
+    <!-- Settings View -->
+    <div id="settingsView" class="main-content hidden">
       
-      <button id="encodeBtn" class="encode-button">
-        <span>🚀 Start Encoding</span>
-      </button>
+      <!-- File Info Panel -->
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Source File</h2>
+          <button id="changeFileBtn" class="btn-text">Change</button>
+        </div>
+        <div id="fileInfo" class="info-grid"></div>
+      </section>
+
+      <!-- Video Settings -->
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Video Output</h2>
+        </div>
+        <div class="info-grid">
+          <div class="info-row">
+            <span class="info-label">Codec</span>
+            <span class="info-value accent">HEVC (H.265) NVENC</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Quality</span>
+            <span class="info-value">CQ 22</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Preset</span>
+            <span class="info-value">P4</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Audio Tracks -->
+      <section id="audioSection" class="panel hidden">
+        <div class="panel-header">
+          <h2>Audio Tracks</h2>
+          <span id="audioCount" class="track-count"></span>
+        </div>
+        <div id="audioTracks" class="tracks-list"></div>
+      </section>
+
+      <!-- Subtitle Tracks -->
+      <section id="subtitleSection" class="panel hidden">
+        <div class="panel-header">
+          <h2>Subtitle Tracks</h2>
+          <span id="subtitleCount" class="track-count"></span>
+        </div>
+        <div id="subtitleTracks" class="tracks-list"></div>
+      </section>
+
+      <!-- Command Preview -->
+      <section class="panel command-panel">
+        <div class="panel-header">
+          <h2>Command</h2>
+        </div>
+        <code id="commandPreview" class="command-preview"></code>
+      </section>
+
+      <!-- Encode Button -->
+      <button id="encodeBtn" class="btn-primary">Start Encoding</button>
     </div>
 
-    <div id="progressSection" class="progress-section hidden">
-      <h2>⏳ Encoding Progress</h2>
-      <div class="progress-container">
+    <!-- Progress View -->
+    <div id="progressView" class="main-content hidden">
+      <section class="panel progress-panel">
+        <div class="panel-header">
+          <h2>Encoding</h2>
+          <span id="progressPercent" class="progress-percent">0%</span>
+        </div>
+        
         <div class="progress-bar">
           <div id="progressFill" class="progress-fill"></div>
         </div>
-        <div class="progress-text">
-          <span id="progressPercent">0%</span>
+
+        <div class="progress-stats">
+          <div class="stat">
+            <span class="stat-label">Elapsed</span>
+            <span id="elapsedTime" class="stat-value">0s</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">ETA</span>
+            <span id="eta" class="stat-value">--</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">Speed</span>
+            <span id="speed" class="stat-value">--</span>
+          </div>
+          <div class="stat">
+            <span class="stat-label">FPS</span>
+            <span id="fps" class="stat-value">--</span>
+          </div>
         </div>
-      </div>
-      <div class="progress-details">
-        <div class="detail-item">
-          <span class="detail-label">Time Elapsed:</span>
-          <span id="timeElapsed" class="detail-value">0s</span>
-        </div>
-        <div class="detail-item">
-          <span class="detail-label">ETA:</span>
-          <span id="eta" class="detail-value">Calculating...</span>
-        </div>
-        <div class="detail-item">
-          <span class="detail-label">Speed:</span>
-          <span id="speed" class="detail-value">-</span>
-        </div>
-        <div class="detail-item">
-          <span class="detail-label">FPS:</span>
-          <span id="fps" class="detail-value">-</span>
-        </div>
-      </div>
+      </section>
     </div>
 
-    <div id="completionSection" class="completion-section hidden">
-      <div class="completion-content">
-        <div class="success-icon">✅</div>
-        <h2>Encoding Complete!</h2>
+    <!-- Completion View -->
+    <div id="completionView" class="main-content hidden">
+      <section class="panel completion-panel">
+        <div class="completion-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+        </div>
+        <h2>Encoding Complete</h2>
         <p id="outputPath" class="output-path"></p>
-        <button id="encodeAnotherBtn" class="secondary-button">Encode Another Video</button>
-      </div>
+        <div id="sizeComparison" class="size-comparison"></div>
+        <button id="encodeAnotherBtn" class="btn-secondary">Encode Another</button>
+      </section>
     </div>
   </div>
 

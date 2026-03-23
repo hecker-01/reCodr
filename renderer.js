@@ -2,427 +2,331 @@ const { ipcRenderer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
-let currentVideoPath = null;
-let currentVideoDuration = 0;
+// State
+let currentFile = null;
+let metadata = null;
+let audioTracks = [];
+let subtitleTracks = [];
 let encodeStartTime = null;
-let currentMetadata = null;
-let audioTrackSettings = [];
-let subtitleTrackSettings = [];
 
-// DOM elements
+// DOM Elements
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
-const videoInfo = document.getElementById('videoInfo');
-const infoContent = document.getElementById('infoContent');
-const encodingSettings = document.getElementById('encodingSettings');
-const encodeBtn = document.getElementById('encodeBtn');
-const progressSection = document.getElementById('progressSection');
-const completionSection = document.getElementById('completionSection');
-const encodeAnotherBtn = document.getElementById('encodeAnotherBtn');
-const audioTracksSection = document.getElementById('audioTracksSection');
-const audioTracksContent = document.getElementById('audioTracksContent');
-const subtitleTracksSection = document.getElementById('subtitleTracksSection');
-const subtitleTracksContent = document.getElementById('subtitleTracksContent');
+const settingsView = document.getElementById('settingsView');
+const progressView = document.getElementById('progressView');
+const completionView = document.getElementById('completionView');
+const fileInfo = document.getElementById('fileInfo');
+const audioSection = document.getElementById('audioSection');
+const subtitleSection = document.getElementById('subtitleSection');
+const audioTracksEl = document.getElementById('audioTracks');
+const subtitleTracksEl = document.getElementById('subtitleTracks');
 const commandPreview = document.getElementById('commandPreview');
+const encodeBtn = document.getElementById('encodeBtn');
+const changeFileBtn = document.getElementById('changeFileBtn');
+const encodeAnotherBtn = document.getElementById('encodeAnotherBtn');
 
-// Drag and drop handlers
-dropZone.addEventListener('click', () => {
-  fileInput.click();
-});
-
-fileInput.addEventListener('change', (e) => {
-  if (e.target.files.length > 0) {
-    handleFile(e.target.files[0].path);
-  }
-});
-
+// Event Listeners
+dropZone.addEventListener('click', () => fileInput.click());
 dropZone.addEventListener('dragover', (e) => {
   e.preventDefault();
-  e.stopPropagation();
   dropZone.classList.add('drag-over');
 });
-
 dropZone.addEventListener('dragleave', (e) => {
   e.preventDefault();
-  e.stopPropagation();
   dropZone.classList.remove('drag-over');
 });
-
 dropZone.addEventListener('drop', (e) => {
   e.preventDefault();
-  e.stopPropagation();
   dropZone.classList.remove('drag-over');
-  
   if (e.dataTransfer.files.length > 0) {
-    handleFile(e.dataTransfer.files[0].path);
+    processFile(e.dataTransfer.files[0].path);
   }
 });
+fileInput.addEventListener('change', (e) => {
+  if (e.target.files.length > 0) {
+    processFile(e.target.files[0].path);
+  }
+});
+changeFileBtn.addEventListener('click', resetUI);
+encodeAnotherBtn.addEventListener('click', resetUI);
+encodeBtn.addEventListener('click', startEncode);
 
-// Handle file selection
-async function handleFile(filePath) {
-  currentVideoPath = filePath;
-  
-  // Hide completion if visible
-  completionSection.classList.add('hidden');
+// Process file
+async function processFile(filePath) {
+  currentFile = filePath;
   
   try {
-    const metadata = await ipcRenderer.invoke('get-video-info', filePath);
-    currentMetadata = metadata;
-    displayVideoInfo(metadata);
-    displayAudioTracks(metadata);
-    displaySubtitleTracks(metadata);
-    updateCommandPreview();
-    encodingSettings.classList.remove('hidden');
+    metadata = await ipcRenderer.invoke('get-video-info', filePath);
+    displayFileInfo();
+    displayAudioTracks();
+    displaySubtitleTracks();
+    updateCommand();
+    
+    dropZone.classList.add('hidden');
+    settingsView.classList.remove('hidden');
   } catch (error) {
     alert('Error reading video file: ' + error.message);
-    console.error(error);
   }
 }
 
-// Display video information
-function displayVideoInfo(metadata) {
-  videoInfo.classList.remove('hidden');
-  
+// Display file info
+function displayFileInfo() {
   const format = metadata.format;
-  const videoStream = metadata.streams.find(s => s.codec_type === 'video');
-  const audioStreams = metadata.streams.filter(s => s.codec_type === 'audio');
+  const video = metadata.streams.find(s => s.codec_type === 'video');
   
-  currentVideoDuration = parseFloat(format.duration) || 0;
+  const size = (parseInt(format.size) / (1024 * 1024)).toFixed(2) + ' MB';
+  const duration = formatDuration(parseFloat(format.duration) || 0);
+  const resolution = video ? `${video.width}x${video.height}` : 'N/A';
+  const codec = video ? video.codec_name.toUpperCase() : 'N/A';
+  const bitrate = format.bit_rate ? (parseInt(format.bit_rate) / 1000000).toFixed(2) + ' Mbps' : 'N/A';
   
-  const fileSize = (parseInt(format.size) / (1024 * 1024)).toFixed(2);
-  const duration = formatDuration(currentVideoDuration);
-  const bitrate = format.bit_rate ? (parseInt(format.bit_rate) / 1000000).toFixed(2) + ' Mbps' : 'Unknown';
+  fileInfo.innerHTML = `
+    <div class="info-row"><span class="info-label">File</span><span class="info-value">${path.basename(currentFile)}</span></div>
+    <div class="info-row"><span class="info-label">Size</span><span class="info-value">${size}</span></div>
+    <div class="info-row"><span class="info-label">Duration</span><span class="info-value">${duration}</span></div>
+    <div class="info-row"><span class="info-label">Resolution</span><span class="info-value">${resolution}</span></div>
+    <div class="info-row"><span class="info-label">Video Codec</span><span class="info-value">${codec}</span></div>
+    <div class="info-row"><span class="info-label">Bitrate</span><span class="info-value">${bitrate}</span></div>
+  `;
+}
+
+// Display audio tracks
+function displayAudioTracks() {
+  const streams = metadata.streams.filter(s => s.codec_type === 'audio');
   
-  const info = [];
-  
-  // File info
-  info.push({ label: 'Filename', value: path.basename(currentVideoPath) });
-  info.push({ label: 'File Size', value: fileSize + ' MB' });
-  info.push({ label: 'Duration', value: duration });
-  info.push({ label: 'Format', value: format.format_name.toUpperCase() });
-  info.push({ label: 'Overall Bitrate', value: bitrate });
-  
-  // Video info
-  if (videoStream) {
-    info.push({ label: 'Video Codec', value: videoStream.codec_name.toUpperCase() });
-    info.push({ label: 'Resolution', value: `${videoStream.width}x${videoStream.height}` });
-    info.push({ label: 'Frame Rate', value: eval(videoStream.r_frame_rate).toFixed(2) + ' fps' });
-    if (videoStream.bit_rate) {
-      info.push({ label: 'Video Bitrate', value: (parseInt(videoStream.bit_rate) / 1000000).toFixed(2) + ' Mbps' });
-    }
+  if (streams.length === 0) {
+    audioSection.classList.add('hidden');
+    audioTracks = [];
+    return;
   }
   
-  // Audio info
-  if (audioStreams.length > 0) {
-    const audioStream = audioStreams[0];
-    info.push({ label: 'Audio Codec', value: audioStream.codec_name.toUpperCase() });
-    info.push({ label: 'Audio Channels', value: audioStream.channels || 'Unknown' });
-    info.push({ label: 'Sample Rate', value: audioStream.sample_rate ? (audioStream.sample_rate / 1000) + ' kHz' : 'Unknown' });
-  }
+  audioSection.classList.remove('hidden');
+  audioTracks = streams.map(s => ({
+    index: s.index,
+    enabled: true,
+    action: 'copy',
+    title: s.tags?.title || '',
+    language: (s.tags?.language || 'und').toUpperCase(),
+    codec: s.codec_name?.toUpperCase() || 'Unknown',
+    channels: s.channels || '?'
+  }));
   
-  infoContent.innerHTML = info.map(item => `
-    <div class="info-item">
-      <span class="info-label">${item.label}:</span>
-      <span class="info-value">${item.value}</span>
+  renderAudioTracks();
+}
+
+function renderAudioTracks() {
+  const enabled = audioTracks.filter(t => t.enabled).length;
+  document.getElementById('audioCount').textContent = `${enabled}/${audioTracks.length}`;
+  
+  audioTracksEl.innerHTML = audioTracks.map((t, idx) => `
+    <div class="track-item">
+      <label class="track-toggle">
+        <input type="checkbox" ${t.enabled ? 'checked' : ''} onchange="toggleAudio(${idx}, this.checked)">
+        <span class="track-info">
+          <span class="track-name">${t.title || 'Track ' + (idx + 1)}</span>
+          <span class="track-meta">${t.language} · ${t.codec} · ${t.channels}ch</span>
+        </span>
+      </label>
+      <select class="track-action" onchange="setAudioAction(${idx}, this.value)" ${!t.enabled ? 'disabled' : ''}>
+        <option value="copy" ${t.action === 'copy' ? 'selected' : ''}>Copy</option>
+        <option value="aac" ${t.action === 'aac' ? 'selected' : ''}>AAC 192k</option>
+        <option value="opus" ${t.action === 'opus' ? 'selected' : ''}>Opus 128k</option>
+        <option value="ac3" ${t.action === 'ac3' ? 'selected' : ''}>AC3 384k</option>
+      </select>
     </div>
   `).join('');
 }
 
-// Display audio tracks with options
-function displayAudioTracks(metadata) {
-  const audioStreams = metadata.streams.filter(s => s.codec_type === 'audio');
+// Display subtitle tracks
+function displaySubtitleTracks() {
+  const streams = metadata.streams.filter(s => s.codec_type === 'subtitle');
   
-  if (audioStreams.length === 0) {
-    audioTracksSection.classList.add('hidden');
-    audioTrackSettings = [];
+  if (streams.length === 0) {
+    subtitleSection.classList.add('hidden');
+    subtitleTracks = [];
     return;
   }
   
-  audioTracksSection.classList.remove('hidden');
-  audioTrackSettings = audioStreams.map((stream, idx) => ({
-    index: stream.index,
-    enabled: true,
-    action: 'copy'
-  }));
+  subtitleSection.classList.remove('hidden');
+  subtitleTracks = streams.map(s => {
+    const isImage = ['hdmv_pgs_subtitle', 'dvd_subtitle', 'dvdsub', 'pgssub'].includes(s.codec_name?.toLowerCase());
+    return {
+      index: s.index,
+      enabled: true,
+      action: 'copy',
+      title: s.tags?.title || '',
+      language: (s.tags?.language || 'und').toUpperCase(),
+      codec: s.codec_name?.toUpperCase() || 'Unknown',
+      type: isImage ? 'Image' : 'Text',
+      isImage
+    };
+  });
   
-  audioTracksContent.innerHTML = audioStreams.map((stream, idx) => {
-    const language = stream.tags?.language || 'und';
-    const title = stream.tags?.title || '';
-    const codec = stream.codec_name?.toUpperCase() || 'Unknown';
-    const channels = stream.channels || '?';
-    const bitrate = stream.bit_rate ? Math.round(stream.bit_rate / 1000) + ' kbps' : '';
-    const displayName = title || `Track ${idx + 1}`;
-    
-    return `
-      <div class="track-item" data-type="audio" data-idx="${idx}">
-        <div class="track-header">
-          <label class="track-checkbox">
-            <input type="checkbox" checked onchange="toggleAudioTrack(${idx}, this.checked)">
-            <span class="track-title">${displayName}</span>
-          </label>
-          <span class="track-badge">${language.toUpperCase()}</span>
-        </div>
-        <div class="track-details">
-          <span>${codec}</span>
-          <span>${channels}ch</span>
-          ${bitrate ? `<span>${bitrate}</span>` : ''}
-        </div>
-        <div class="track-action">
-          <label>Action:</label>
-          <select onchange="setAudioAction(${idx}, this.value)">
-            <option value="copy">Copy (no re-encode)</option>
-            <option value="aac">Re-encode to AAC</option>
-            <option value="opus">Re-encode to Opus</option>
-            <option value="ac3">Re-encode to AC3</option>
-          </select>
-        </div>
-      </div>
-    `;
-  }).join('');
+  renderSubtitleTracks();
 }
 
-// Display subtitle tracks with options
-function displaySubtitleTracks(metadata) {
-  const subtitleStreams = metadata.streams.filter(s => s.codec_type === 'subtitle');
+function renderSubtitleTracks() {
+  const enabled = subtitleTracks.filter(t => t.enabled).length;
+  document.getElementById('subtitleCount').textContent = `${enabled}/${subtitleTracks.length}`;
   
-  if (subtitleStreams.length === 0) {
-    subtitleTracksSection.classList.add('hidden');
-    subtitleTrackSettings = [];
-    return;
-  }
-  
-  subtitleTracksSection.classList.remove('hidden');
-  subtitleTrackSettings = subtitleStreams.map((stream, idx) => ({
-    index: stream.index,
-    enabled: true,
-    action: 'copy'
-  }));
-  
-  subtitleTracksContent.innerHTML = subtitleStreams.map((stream, idx) => {
-    const language = stream.tags?.language || 'und';
-    const title = stream.tags?.title || '';
-    const codec = stream.codec_name?.toUpperCase() || 'Unknown';
-    const displayName = title || `Track ${idx + 1}`;
-    const isImageBased = ['hdmv_pgs_subtitle', 'dvd_subtitle', 'dvdsub', 'pgssub'].includes(stream.codec_name?.toLowerCase());
-    
-    return `
-      <div class="track-item" data-type="subtitle" data-idx="${idx}">
-        <div class="track-header">
-          <label class="track-checkbox">
-            <input type="checkbox" checked onchange="toggleSubtitleTrack(${idx}, this.checked)">
-            <span class="track-title">${displayName}</span>
-          </label>
-          <span class="track-badge">${language.toUpperCase()}</span>
-        </div>
-        <div class="track-details">
-          <span>${codec}</span>
-          ${isImageBased ? '<span class="badge-warn">Image-based</span>' : '<span class="badge-ok">Text-based</span>'}
-        </div>
-        <div class="track-action">
-          <label>Action:</label>
-          <select onchange="setSubtitleAction(${idx}, this.value)">
-            <option value="copy">Copy (no re-encode)</option>
-            ${!isImageBased ? '<option value="srt">Convert to SRT</option>' : ''}
-            ${!isImageBased ? '<option value="ass">Convert to ASS</option>' : ''}
-            <option value="mov_text">Convert to MOV Text</option>
-          </select>
-        </div>
-      </div>
-    `;
-  }).join('');
+  subtitleTracksEl.innerHTML = subtitleTracks.map((t, idx) => `
+    <div class="track-item">
+      <label class="track-toggle">
+        <input type="checkbox" ${t.enabled ? 'checked' : ''} onchange="toggleSubtitle(${idx}, this.checked)">
+        <span class="track-info">
+          <span class="track-name">${t.title || 'Track ' + (idx + 1)}</span>
+          <span class="track-meta">${t.language} · ${t.codec} · ${t.type}</span>
+        </span>
+      </label>
+      <select class="track-action" onchange="setSubtitleAction(${idx}, this.value)" ${!t.enabled ? 'disabled' : ''}>
+        <option value="copy" ${t.action === 'copy' ? 'selected' : ''}>Copy</option>
+        ${!t.isImage ? `<option value="srt" ${t.action === 'srt' ? 'selected' : ''}>SRT</option>` : ''}
+        ${!t.isImage ? `<option value="ass" ${t.action === 'ass' ? 'selected' : ''}>ASS</option>` : ''}
+        <option value="mov_text" ${t.action === 'mov_text' ? 'selected' : ''}>MOV Text</option>
+      </select>
+    </div>
+  `).join('');
 }
 
-// Track toggle functions
-function toggleAudioTrack(idx, enabled) {
-  audioTrackSettings[idx].enabled = enabled;
-  updateCommandPreview();
-}
+// Track handlers
+window.toggleAudio = (idx, enabled) => {
+  audioTracks[idx].enabled = enabled;
+  renderAudioTracks();
+  updateCommand();
+};
 
-function toggleSubtitleTrack(idx, enabled) {
-  subtitleTrackSettings[idx].enabled = enabled;
-  updateCommandPreview();
-}
+window.setAudioAction = (idx, action) => {
+  audioTracks[idx].action = action;
+  updateCommand();
+};
 
-function setAudioAction(idx, action) {
-  audioTrackSettings[idx].action = action;
-  updateCommandPreview();
-}
+window.toggleSubtitle = (idx, enabled) => {
+  subtitleTracks[idx].enabled = enabled;
+  renderSubtitleTracks();
+  updateCommand();
+};
 
-function setSubtitleAction(idx, action) {
-  subtitleTrackSettings[idx].action = action;
-  updateCommandPreview();
-}
-
-// Make functions globally accessible
-window.toggleAudioTrack = toggleAudioTrack;
-window.toggleSubtitleTrack = toggleSubtitleTrack;
-window.setAudioAction = setAudioAction;
-window.setSubtitleAction = setSubtitleAction;
+window.setSubtitleAction = (idx, action) => {
+  subtitleTracks[idx].action = action;
+  updateCommand();
+};
 
 // Update command preview
-function updateCommandPreview() {
-  const parts = ['ffmpeg -i "input"'];
+function updateCommand() {
+  const parts = ['ffmpeg -i "input"', '-map 0:v'];
   
-  // Video mapping
-  parts.push('-map 0:v');
+  const enabledAudio = audioTracks.filter(t => t.enabled);
+  enabledAudio.forEach(t => parts.push(`-map 0:${t.index}`));
   
-  // Audio mappings
-  const enabledAudio = audioTrackSettings.filter(t => t.enabled);
-  enabledAudio.forEach(t => {
-    parts.push(`-map 0:${t.index}`);
-  });
+  const enabledSubs = subtitleTracks.filter(t => t.enabled);
+  enabledSubs.forEach(t => parts.push(`-map 0:${t.index}`));
   
-  // Subtitle mappings
-  const enabledSubs = subtitleTrackSettings.filter(t => t.enabled);
-  enabledSubs.forEach(t => {
-    parts.push(`-map 0:${t.index}`);
-  });
-  
-  // Video codec
   parts.push('-c:v hevc_nvenc -cq 22 -preset p4');
   
-  // Audio codec(s)
   enabledAudio.forEach((t, idx) => {
-    if (t.action === 'copy') {
-      parts.push(`-c:a:${idx} copy`);
-    } else if (t.action === 'aac') {
-      parts.push(`-c:a:${idx} aac -b:a:${idx} 192k`);
-    } else if (t.action === 'opus') {
-      parts.push(`-c:a:${idx} libopus -b:a:${idx} 128k`);
-    } else if (t.action === 'ac3') {
-      parts.push(`-c:a:${idx} ac3 -b:a:${idx} 384k`);
-    }
+    if (t.action === 'copy') parts.push(`-c:a:${idx} copy`);
+    else if (t.action === 'aac') parts.push(`-c:a:${idx} aac -b:a:${idx} 192k`);
+    else if (t.action === 'opus') parts.push(`-c:a:${idx} libopus -b:a:${idx} 128k`);
+    else if (t.action === 'ac3') parts.push(`-c:a:${idx} ac3 -b:a:${idx} 384k`);
   });
   
-  // Subtitle codec(s)
   enabledSubs.forEach((t, idx) => {
-    if (t.action === 'copy') {
-      parts.push(`-c:s:${idx} copy`);
-    } else if (t.action === 'srt') {
-      parts.push(`-c:s:${idx} srt`);
-    } else if (t.action === 'ass') {
-      parts.push(`-c:s:${idx} ass`);
-    } else if (t.action === 'mov_text') {
-      parts.push(`-c:s:${idx} mov_text`);
-    }
+    parts.push(`-c:s:${idx} ${t.action}`);
   });
   
   parts.push('"output.mkv"');
-  
-  if (commandPreview) {
-    commandPreview.textContent = parts.join(' ');
-  }
+  commandPreview.textContent = parts.join(' ');
 }
 
-// Format duration
-function formatDuration(seconds) {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
+// Start encoding
+async function startEncode() {
+  if (!currentFile) return;
   
-  if (hours > 0) {
-    return `${hours}h ${minutes}m ${secs}s`;
-  } else if (minutes > 0) {
-    return `${minutes}m ${secs}s`;
-  } else {
-    return `${secs}s`;
-  }
-}
-
-// Encode button handler
-encodeBtn.addEventListener('click', async () => {
-  if (!currentVideoPath) return;
-  
-  const outputPath = getOutputPath(currentVideoPath);
-  
-  // Build encoding options
+  const outputPath = getOutputPath(currentFile);
   const options = {
-    audioTracks: audioTrackSettings.filter(t => t.enabled),
-    subtitleTracks: subtitleTrackSettings.filter(t => t.enabled)
+    audioTracks: audioTracks.filter(t => t.enabled),
+    subtitleTracks: subtitleTracks.filter(t => t.enabled)
   };
   
-  // Hide settings and show progress
-  encodingSettings.classList.add('hidden');
-  videoInfo.classList.add('hidden');
-  progressSection.classList.remove('hidden');
-  
+  settingsView.classList.add('hidden');
+  progressView.classList.remove('hidden');
   encodeStartTime = Date.now();
   
   try {
-    await ipcRenderer.invoke('encode-video', currentVideoPath, outputPath, options);
+    await ipcRenderer.invoke('encode-video', currentFile, outputPath, options);
     showCompletion(outputPath);
   } catch (error) {
-    alert('Error encoding video: ' + error.message);
-    console.error(error);
-    resetUI();
+    alert('Error encoding: ' + error.message);
+    settingsView.classList.remove('hidden');
+    progressView.classList.add('hidden');
   }
-});
-
-// Get output path
-function getOutputPath(inputPath) {
-  const parsed = path.parse(inputPath);
-  return path.join(parsed.dir, `${parsed.name}_encoded.mkv`);
 }
 
-// Progress updates
+// Progress handler
 ipcRenderer.on('encode-progress', (event, progress) => {
-  const percent = progress.percent || 0;
-  const timemark = progress.timemark || '00:00:00';
-  const fps = progress.currentFps || 0;
-  const speed = progress.currentKbps ? (progress.currentKbps / 1000).toFixed(2) + ' Mbps' : '-';
-  
-  // Update progress bar
+  const percent = Math.round(progress.percent || 0);
+  document.getElementById('progressPercent').textContent = percent + '%';
   document.getElementById('progressFill').style.width = percent + '%';
-  document.getElementById('progressPercent').textContent = percent.toFixed(1) + '%';
+  document.getElementById('fps').textContent = (progress.currentFps || 0).toFixed(1);
+  document.getElementById('speed').textContent = progress.currentKbps 
+    ? (progress.currentKbps / 1000).toFixed(2) + ' Mbps' 
+    : '--';
   
-  // Calculate elapsed time
-  const elapsedSeconds = (Date.now() - encodeStartTime) / 1000;
-  document.getElementById('timeElapsed').textContent = formatDuration(elapsedSeconds);
+  const elapsed = (Date.now() - encodeStartTime) / 1000;
+  document.getElementById('elapsedTime').textContent = formatDuration(elapsed);
   
-  // Calculate ETA
-  if (percent > 0) {
-    const totalEstimated = (elapsedSeconds / percent) * 100;
-    const remaining = totalEstimated - elapsedSeconds;
+  if (progress.percent > 0) {
+    const total = (elapsed / progress.percent) * 100;
+    const remaining = total - elapsed;
     document.getElementById('eta').textContent = formatDuration(remaining);
   }
-  
-  // Update speed and FPS
-  document.getElementById('speed').textContent = speed;
-  document.getElementById('fps').textContent = fps.toFixed(1) + ' fps';
 });
 
 // Show completion
 function showCompletion(outputPath) {
-  progressSection.classList.add('hidden');
-  completionSection.classList.remove('hidden');
+  progressView.classList.add('hidden');
+  completionView.classList.remove('hidden');
+  
   document.getElementById('outputPath').textContent = outputPath;
   
-  // Show file size comparison
-  if (fs.existsSync(outputPath)) {
-    const inputSize = (fs.statSync(currentVideoPath).size / (1024 * 1024)).toFixed(2);
-    const outputSize = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(2);
+  if (fs.existsSync(outputPath) && currentFile) {
+    const inputSize = fs.statSync(currentFile).size / (1024 * 1024);
+    const outputSize = fs.statSync(outputPath).size / (1024 * 1024);
     const savings = ((1 - outputSize / inputSize) * 100).toFixed(1);
     
-    document.getElementById('outputPath').textContent = 
-      `${outputPath}\n\nOriginal: ${inputSize} MB → Encoded: ${outputSize} MB (${savings}% ${savings > 0 ? 'smaller' : 'larger'})`;
+    document.getElementById('sizeComparison').innerHTML = `
+      <span>${inputSize.toFixed(2)} MB</span>
+      <span class="arrow">→</span>
+      <span>${outputSize.toFixed(2)} MB</span>
+      <span class="savings ${savings > 0 ? 'positive' : ''}">${savings > 0 ? '-' : '+'}${Math.abs(savings)}%</span>
+    `;
   }
 }
 
 // Reset UI
 function resetUI() {
-  videoInfo.classList.add('hidden');
-  encodingSettings.classList.add('hidden');
-  progressSection.classList.add('hidden');
-  completionSection.classList.add('hidden');
-  audioTracksSection.classList.add('hidden');
-  subtitleTracksSection.classList.add('hidden');
-  currentVideoPath = null;
-  currentMetadata = null;
-  audioTrackSettings = [];
-  subtitleTrackSettings = [];
+  currentFile = null;
+  metadata = null;
+  audioTracks = [];
+  subtitleTracks = [];
+  
+  dropZone.classList.remove('hidden');
+  settingsView.classList.add('hidden');
+  progressView.classList.add('hidden');
+  completionView.classList.add('hidden');
 }
 
-// Encode another button
-encodeAnotherBtn.addEventListener('click', () => {
-  resetUI();
-});
+// Helpers
+function getOutputPath(inputPath) {
+  const parsed = path.parse(inputPath);
+  return path.join(parsed.dir, `${parsed.name}_encoded.mkv`);
+}
+
+function formatDuration(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
