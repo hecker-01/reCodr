@@ -38,6 +38,20 @@
       "assets/**/*",
       "node_modules/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "assets/icon.ico",
+        "to": "assets/icon.ico"
+      },
+      {
+        "from": "assets/icon.icns",
+        "to": "assets/icon.icns"
+      },
+      {
+        "from": "assets/icon.png",
+        "to": "assets/icon.png"
+      }
+    ],
     "win": {
       "target": [
         "nsis"

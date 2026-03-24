@@ -24,8 +24,8 @@ function getWindowIconPath() {
         : "icon.png";
 
   const candidates = [
-    path.join(__dirname, "assets", iconName),
     path.join(process.resourcesPath, "assets", iconName),
+    path.join(__dirname, "assets", iconName),
   ];
 
   return candidates.find((candidate) => fs.existsSync(candidate));
