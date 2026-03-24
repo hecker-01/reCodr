@@ -88,11 +88,12 @@ npm run dev
 ## Usage
 
 1. **Launch the app** - Run `npm start`
-2. **Add video** - Drag and drop a video file into the window (or click to browse)
-3. **Review info** - Check the video details and encoding settings
-4. **Start encoding** - Click "🚀 Start Encoding" button
-5. **Monitor progress** - Watch real-time progress with ETA and speed
-6. **Done!** - Encoded file is saved as `[filename]_encoded.mkv` in the same directory
+2. **Configure binaries (optional)** - Click **Binary Paths** in the header, set custom `ffmpeg` / `ffprobe` executable paths, and use **Check Paths** to verify both tools
+3. **Add video** - Drag and drop a video file into the window (or click to browse)
+4. **Review info** - Check the video details and encoding settings
+5. **Start encoding** - Click "🚀 Start Encoding" button
+6. **Monitor progress** - Watch real-time progress with ETA and speed
+7. **Done!** - Encoded file is saved as `[filename]_encoded.mkv` in the same directory
 
 ## Supported Formats
 

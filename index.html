@@ -9,8 +9,13 @@
   <body>
     <div id="app">
       <header class="app-header">
-        <h1>reCodr</h1>
-        <span class="version">Video Re-Encoder</span>
+        <div class="header-left">
+          <h1>reCodr</h1>
+          <span class="version">Video Re-Encoder</span>
+        </div>
+        <button id="openBinaryConfigBtn" class="btn-secondary btn-header">
+          Binary Paths
+        </button>
       </header>
 
       <!-- Drop Zone -->
@@ -198,6 +203,50 @@
           <button id="encodeAnotherBtn" class="btn-secondary">
             Encode Another
           </button>
+        </section>
+      </div>
+
+      <!-- Binary Config View -->
+      <div id="binaryConfigView" class="main-content hidden">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Binary Configuration</h2>
+          </div>
+          <div class="config-note">
+            Leave blank to use system PATH. Set full executable paths to
+            override.
+          </div>
+          <div id="envOverrideStatus" class="env-override-status hidden"></div>
+          <div class="info-grid">
+            <div class="info-row config-row">
+              <span class="info-label">ffmpeg path</span>
+              <input
+                id="ffmpegPathInput"
+                class="path-input"
+                type="text"
+                placeholder="Example: C:\\ffmpeg\\bin\\ffmpeg.exe"
+              />
+            </div>
+            <div class="info-row config-row">
+              <span class="info-label">ffprobe path</span>
+              <input
+                id="ffprobePathInput"
+                class="path-input"
+                type="text"
+                placeholder="Example: C:\\ffmpeg\\bin\\ffprobe.exe"
+              />
+            </div>
+          </div>
+          <div id="binaryCheckResult" class="binary-check-result"></div>
+          <div class="config-actions">
+            <button id="checkBinaryConfigBtn" class="btn-secondary">
+              Check Paths
+            </button>
+            <button id="saveBinaryConfigBtn" class="btn-primary">
+              Save Paths
+            </button>
+            <button id="closeBinaryConfigBtn" class="btn-text">Back</button>
+          </div>
         </section>
       </div>
     </div>

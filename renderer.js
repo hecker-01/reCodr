@@ -13,6 +13,7 @@ let videoQuality = "22";
 let videoPreset = "p4";
 let encodeStartTime = null;
 let commandModified = false;
+let viewBeforeBinaryConfig = "drop";
 
 // Codec compatibility with formats
 const codecFormats = {
@@ -49,6 +50,15 @@ const outputFormatSelect = document.getElementById("outputFormat");
 const videoCodecSelect = document.getElementById("videoCodec");
 const videoQualitySelect = document.getElementById("videoQuality");
 const videoPresetSelect = document.getElementById("videoPreset");
+const openBinaryConfigBtn = document.getElementById("openBinaryConfigBtn");
+const binaryConfigView = document.getElementById("binaryConfigView");
+const ffmpegPathInput = document.getElementById("ffmpegPathInput");
+const ffprobePathInput = document.getElementById("ffprobePathInput");
+const envOverrideStatus = document.getElementById("envOverrideStatus");
+const binaryCheckResult = document.getElementById("binaryCheckResult");
+const checkBinaryConfigBtn = document.getElementById("checkBinaryConfigBtn");
+const saveBinaryConfigBtn = document.getElementById("saveBinaryConfigBtn");
+const closeBinaryConfigBtn = document.getElementById("closeBinaryConfigBtn");
 
 // Event Listeners
 dropZone.addEventListener("click", () => fileInput.click());
@@ -74,6 +84,10 @@ fileInput.addEventListener("change", (e) => {
 });
 changeFileBtn.addEventListener("click", resetUI);
 encodeAnotherBtn.addEventListener("click", () => location.reload());
+openBinaryConfigBtn.addEventListener("click", openBinaryConfig);
+closeBinaryConfigBtn.addEventListener("click", closeBinaryConfig);
+checkBinaryConfigBtn.addEventListener("click", checkBinaryConfig);
+saveBinaryConfigBtn.addEventListener("click", saveBinaryConfig);
 outputFormatSelect.addEventListener("change", (e) => {
   if (!checkCommandModification()) return;
   outputFormat = e.target.value;
@@ -102,6 +116,8 @@ commandPreview.addEventListener("input", () => {
   commandModified = true;
 });
 encodeBtn.addEventListener("click", startEncode);
+
+loadBinaryConfigForm();
 
 // Helper to check if command was modified and warn user
 function checkCommandModification() {
@@ -551,6 +567,171 @@ function showCompletion(outputPath) {
     console.error("Error displaying completion stats:", error);
     document.getElementById("sizeComparison").innerHTML = "";
   }
+}
+
+function getVisibleMainView() {
+  if (!dropZone.classList.contains("hidden")) return "drop";
+  if (!settingsView.classList.contains("hidden")) return "settings";
+  if (!progressView.classList.contains("hidden")) return "progress";
+  if (!completionView.classList.contains("hidden")) return "completion";
+  return "drop";
+}
+
+function showOnlyView(viewName) {
+  dropZone.classList.add("hidden");
+  settingsView.classList.add("hidden");
+  progressView.classList.add("hidden");
+  completionView.classList.add("hidden");
+  binaryConfigView.classList.add("hidden");
+
+  if (viewName === "drop") dropZone.classList.remove("hidden");
+  else if (viewName === "settings") settingsView.classList.remove("hidden");
+  else if (viewName === "progress") progressView.classList.remove("hidden");
+  else if (viewName === "completion") completionView.classList.remove("hidden");
+  else if (viewName === "binary-config") {
+    binaryConfigView.classList.remove("hidden");
+  }
+}
+
+function renderBinaryCheckResult(result) {
+  if (!result) {
+    envOverrideStatus.textContent = "";
+    envOverrideStatus.className = "env-override-status hidden";
+    binaryCheckResult.innerHTML = "";
+    return;
+  }
+
+  const envDetails = [];
+  if (result.env?.ffmpegLoaded) {
+    envDetails.push(`FFMPEG_PATH loaded (${result.env.ffmpegVar})`);
+  }
+  if (result.env?.ffprobeLoaded) {
+    envDetails.push(`FFPROBE_PATH loaded (${result.env.ffprobeVar})`);
+  }
+
+  if (envDetails.length > 0) {
+    envOverrideStatus.textContent = `Environment override active: ${envDetails.join(" | ")}`;
+    envOverrideStatus.className = "env-override-status env";
+  } else {
+    envOverrideStatus.textContent =
+      "No environment override detected. Using configured path values or system PATH.";
+    envOverrideStatus.className = "env-override-status normal";
+  }
+
+  const sourceLabel = (source) => {
+    if (source === "env") return "environment variable";
+    if (source === "config") return "configured path";
+    return "system PATH";
+  };
+
+  const buildMessage = (toolName, toolResult, source) => {
+    const sourceText = sourceLabel(source);
+    if (toolResult?.ok) {
+      const version = toolResult.version || `${toolName} is available`;
+      return `Valid ${sourceText}: ${version}`;
+    }
+    const err = toolResult?.error || `${toolName} check failed`;
+    return `Invalid ${sourceText}: ${err}`;
+  };
+
+  const ffmpegStatus = result.ffmpeg?.ok ? "ok" : "bad";
+  const ffprobeStatus = result.ffprobe?.ok ? "ok" : "bad";
+
+  const ffmpegMessage = buildMessage(
+    "ffmpeg",
+    result.ffmpeg,
+    result.source?.ffmpeg,
+  );
+
+  const ffprobeMessage = buildMessage(
+    "ffprobe",
+    result.ffprobe,
+    result.source?.ffprobe,
+  );
+
+  binaryCheckResult.innerHTML = `
+    <div class="binary-row ${ffmpegStatus}">
+      <span class="binary-name">ffmpeg ${result.ffmpeg?.ok ? "VALID" : "INVALID"}</span>
+      <span class="binary-msg">${ffmpegMessage}</span>
+    </div>
+    <div class="binary-row ${ffprobeStatus}">
+      <span class="binary-name">ffprobe ${result.ffprobe?.ok ? "VALID" : "INVALID"}</span>
+      <span class="binary-msg">${ffprobeMessage}</span>
+    </div>
+  `;
+}
+
+function collectBinaryConfigInputs() {
+  return {
+    ffmpegPath: ffmpegPathInput.value.trim(),
+    ffprobePath: ffprobePathInput.value.trim(),
+  };
+}
+
+async function loadBinaryConfigForm() {
+  try {
+    const config = await ipcRenderer.invoke("get-binary-config");
+    ffmpegPathInput.value = config.ffmpegPath || "";
+    ffprobePathInput.value = config.ffprobePath || "";
+    renderBinaryCheckResult(config.check);
+  } catch (error) {
+    console.error("Failed to load binary config:", error);
+    renderBinaryCheckResult(null);
+  }
+}
+
+async function checkBinaryConfig() {
+  checkBinaryConfigBtn.disabled = true;
+  checkBinaryConfigBtn.textContent = "Checking...";
+  try {
+    const check = await ipcRenderer.invoke(
+      "verify-binary-config",
+      collectBinaryConfigInputs(),
+    );
+    renderBinaryCheckResult(check);
+  } catch (error) {
+    console.error("Binary check failed:", error);
+    alert("Failed to verify binaries: " + error.message);
+  } finally {
+    checkBinaryConfigBtn.disabled = false;
+    checkBinaryConfigBtn.textContent = "Check Paths";
+  }
+}
+
+async function saveBinaryConfig() {
+  saveBinaryConfigBtn.disabled = true;
+  saveBinaryConfigBtn.textContent = "Saving...";
+  try {
+    const result = await ipcRenderer.invoke(
+      "save-binary-config",
+      collectBinaryConfigInputs(),
+    );
+    ffmpegPathInput.value = result.saved.ffmpegPath || "";
+    ffprobePathInput.value = result.saved.ffprobePath || "";
+    renderBinaryCheckResult(result.check);
+
+    if (!result.check.allOk) {
+      alert("Paths saved, but one or more binary checks failed.");
+      return;
+    }
+
+    alert("Binary paths saved and verified.");
+  } catch (error) {
+    console.error("Failed to save binary config:", error);
+    alert("Failed to save binary paths: " + error.message);
+  } finally {
+    saveBinaryConfigBtn.disabled = false;
+    saveBinaryConfigBtn.textContent = "Save Paths";
+  }
+}
+
+function openBinaryConfig() {
+  viewBeforeBinaryConfig = getVisibleMainView();
+  showOnlyView("binary-config");
+}
+
+function closeBinaryConfig() {
+  showOnlyView(viewBeforeBinaryConfig);
 }
 
 // Reset UI

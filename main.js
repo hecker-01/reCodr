@@ -1,17 +1,170 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
+const fs = require("fs");
 const { spawn } = require("child_process");
 
 let mainWindow;
+let binaryConfig = {
+  ffmpegPath: "",
+  ffprobePath: "",
+};
+
+function getConfigFilePath() {
+  return path.join(app.getPath("userData"), "binary-config.json");
+}
+
+function normalizeBinaryConfig(config = {}) {
+  const normalizePath = (value) => {
+    if (typeof value !== "string") return "";
+    const trimmed = value.trim();
+    let normalized = trimmed;
+    if (
+      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    ) {
+      normalized = trimmed.slice(1, -1).trim();
+    }
+
+    if (process.platform === "win32") {
+      const hasUncPrefix = normalized.startsWith("\\\\");
+      const body = hasUncPrefix ? normalized.slice(2) : normalized;
+      const collapsed = body.replace(/\\\\+/g, "\\");
+      normalized = hasUncPrefix ? `\\\\${collapsed}` : collapsed;
+    }
+
+    return normalized;
+  };
+
+  return {
+    ffmpegPath: normalizePath(config.ffmpegPath),
+    ffprobePath: normalizePath(config.ffprobePath),
+  };
+}
+
+function loadBinaryConfig() {
+  try {
+    const configPath = getConfigFilePath();
+    if (!fs.existsSync(configPath)) {
+      binaryConfig = normalizeBinaryConfig();
+      return;
+    }
+
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    binaryConfig = normalizeBinaryConfig(parsed);
+  } catch (err) {
+    console.warn("Failed to load binary config:", err.message);
+    binaryConfig = normalizeBinaryConfig();
+  }
+}
+
+function saveBinaryConfig(config) {
+  binaryConfig = normalizeBinaryConfig(config);
+  const configPath = getConfigFilePath();
+  fs.writeFileSync(configPath, JSON.stringify(binaryConfig, null, 2), "utf8");
+  return binaryConfig;
+}
 
 function resolveBinaryPath(toolName) {
   const envVar = toolName === "ffmpeg" ? "FFMPEG_PATH" : "FFPROBE_PATH";
-  return process.env[envVar] || toolName;
+  const configuredPath =
+    toolName === "ffmpeg" ? binaryConfig.ffmpegPath : binaryConfig.ffprobePath;
+  return process.env[envVar] || configuredPath || toolName;
 }
 
 function formatBinaryMissingMessage(toolName, err) {
   const envVar = toolName === "ffmpeg" ? "FFMPEG_PATH" : "FFPROBE_PATH";
   return `${toolName} not found. Install ${toolName} and ensure it is available in PATH, or set ${envVar}. Original error: ${err.message}`;
+}
+
+function runVersionCheck(toolName, command) {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+
+    const child = spawn(command, ["-version"]);
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+      resolve({
+        ok: false,
+        command,
+        version: "",
+        error: `${toolName} check timed out`,
+      });
+    }, 8000);
+
+    child.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    child.on("error", (err) => {
+      clearTimeout(timeout);
+      if (timedOut) return;
+      resolve({ ok: false, command, version: "", error: err.message });
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (timedOut) return;
+
+      const combined = `${stdout}\n${stderr}`;
+      const versionLine = combined
+        .split(/\r?\n/)
+        .find((line) => line.toLowerCase().includes(`${toolName} version`));
+
+      resolve({
+        ok: code === 0,
+        command,
+        version: versionLine || "",
+        error: code === 0 ? "" : `Exited with code ${code}`,
+      });
+    });
+  });
+}
+
+async function verifyBinaryConfig(config = binaryConfig) {
+  const normalized = normalizeBinaryConfig(config);
+  const ffmpegEnv = (process.env.FFMPEG_PATH || "").trim();
+  const ffprobeEnv = (process.env.FFPROBE_PATH || "").trim();
+  const ffmpegSource = ffmpegEnv
+    ? "env"
+    : normalized.ffmpegPath
+      ? "config"
+      : "path";
+  const ffprobeSource = ffprobeEnv
+    ? "env"
+    : normalized.ffprobePath
+      ? "config"
+      : "path";
+  const ffmpegCommand = ffmpegEnv || normalized.ffmpegPath || "ffmpeg";
+  const ffprobeCommand = ffprobeEnv || normalized.ffprobePath || "ffprobe";
+
+  const [ffmpeg, ffprobe] = await Promise.all([
+    runVersionCheck("ffmpeg", ffmpegCommand),
+    runVersionCheck("ffprobe", ffprobeCommand),
+  ]);
+
+  return {
+    ffmpeg,
+    ffprobe,
+    allOk: ffmpeg.ok && ffprobe.ok,
+    source: {
+      ffmpeg: ffmpegSource,
+      ffprobe: ffprobeSource,
+    },
+    env: {
+      ffmpegVar: ffmpegEnv,
+      ffprobeVar: ffprobeEnv,
+      ffmpegLoaded: Boolean(ffmpegEnv),
+      ffprobeLoaded: Boolean(ffprobeEnv),
+    },
+  };
 }
 
 function createWindow() {
@@ -50,7 +203,10 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  loadBinaryConfig();
+  createWindow();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
@@ -62,6 +218,28 @@ app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
+});
+
+ipcMain.handle("get-binary-config", async () => {
+  const check = await verifyBinaryConfig(binaryConfig);
+  return {
+    ...binaryConfig,
+    check,
+  };
+});
+
+ipcMain.handle("verify-binary-config", async (event, config) => {
+  const normalized = normalizeBinaryConfig(config);
+  return verifyBinaryConfig(normalized);
+});
+
+ipcMain.handle("save-binary-config", async (event, config) => {
+  const saved = saveBinaryConfig(config);
+  const check = await verifyBinaryConfig(saved);
+  return {
+    saved,
+    check,
+  };
 });
 
 // IPC handlers for video processing
