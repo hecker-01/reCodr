@@ -1,10 +1,69 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
+const fs = require("fs");
 const { spawn } = require("child_process");
 const ffmpegStatic = require("ffmpeg-static");
 const ffprobeStatic = require("ffprobe-static");
 
 let mainWindow;
+
+function unique(items) {
+  return [...new Set(items.filter(Boolean))];
+}
+
+function withAsarUnpacked(p) {
+  if (!p) return p;
+  return p.includes("app.asar")
+    ? p.replace("app.asar", "app.asar.unpacked")
+    : p;
+}
+
+function resolveBinaryPath(toolName) {
+  const envVar = toolName === "ffmpeg" ? "FFMPEG_PATH" : "FFPROBE_PATH";
+  const systemBinary =
+    process.platform === "win32" ? `${toolName}.exe` : toolName;
+
+  const modulePath =
+    toolName === "ffmpeg"
+      ? typeof ffmpegStatic === "string"
+        ? ffmpegStatic
+        : ffmpegStatic?.path
+      : ffprobeStatic?.path;
+
+  const bundledFallback =
+    toolName === "ffmpeg"
+      ? path.join(
+          __dirname,
+          "node_modules",
+          "ffmpeg-static",
+          process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg",
+        )
+      : path.join(
+          __dirname,
+          "node_modules",
+          "ffprobe-static",
+          "bin",
+          process.platform,
+          process.arch,
+          process.platform === "win32" ? "ffprobe.exe" : "ffprobe",
+        );
+
+  const candidates = unique([
+    process.env[envVar],
+    modulePath,
+    withAsarUnpacked(modulePath),
+    bundledFallback,
+  ]);
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  // Last resort: rely on system PATH
+  return systemBinary;
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -59,7 +118,7 @@ app.on("activate", () => {
 // IPC handlers for video processing
 ipcMain.handle("get-video-info", async (event, filePath) => {
   return new Promise((resolve, reject) => {
-    const ffprobePath = ffprobeStatic.path;
+    const ffprobePath = resolveBinaryPath("ffprobe");
     let timedOut = false;
 
     const ffprobeProcess = spawn(ffprobePath, [
@@ -100,7 +159,7 @@ ipcMain.handle("get-video-info", async (event, filePath) => {
     ffprobeProcess.on("close", (code) => {
       clearTimeout(timeout);
       if (timedOut) return;
-      
+
       if (code === 0) {
         try {
           const metadata = JSON.parse(stdout);
@@ -190,7 +249,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
     args.push("-progress", "pipe:1");
     args.push(outputPath);
 
-    const ffmpegPath = ffmpegStatic.path;
+    const ffmpegPath = resolveBinaryPath("ffmpeg");
     console.log("Starting ffmpeg at:", ffmpegPath);
     console.log("Command args:", args);
 
@@ -246,7 +305,11 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
     ffmpegProcess.on("close", (code) => {
       console.log("FFmpeg process closed with code:", code);
       if (code === 0) {
-        event.sender.send("encode-progress", { percent: 100, currentFps: 0, currentKbps: 0 });
+        event.sender.send("encode-progress", {
+          percent: 100,
+          currentFps: 0,
+          currentKbps: 0,
+        });
         resolve({ success: true });
       } else {
         reject(new Error(`ffmpeg failed with code ${code}`));
@@ -274,7 +337,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
       args.push("-progress", "pipe:1");
     }
 
-    const ffmpegPath = ffmpegStatic.path;
+    const ffmpegPath = resolveBinaryPath("ffmpeg");
     console.log("Starting custom ffmpeg at:", ffmpegPath);
 
     const ffmpegProcess = spawn(ffmpegPath, args, {
@@ -323,7 +386,11 @@ ipcMain.handle("encode-custom", (event, commandString) => {
     ffmpegProcess.on("close", (code) => {
       console.log("Custom ffmpeg process closed with code:", code);
       if (code === 0) {
-        event.sender.send("encode-progress", { percent: 100, currentFps: 0, currentKbps: 0 });
+        event.sender.send("encode-progress", {
+          percent: 100,
+          currentFps: 0,
+          currentKbps: 0,
+        });
         resolve({ success: true });
       } else {
         reject(new Error(`FFmpeg exited with code ${code}`));
@@ -333,10 +400,6 @@ ipcMain.handle("encode-custom", (event, commandString) => {
     ffmpegProcess.on("error", (err) => {
       console.error("Custom ffmpeg process error:", err);
       reject(new Error(`Failed to spawn ffmpeg: ${err.message}`));
-    });
-  });
-});
-      reject(err);
     });
   });
 });
