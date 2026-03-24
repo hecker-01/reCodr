@@ -76,6 +76,14 @@ function formatBinaryMissingMessage(toolName, err) {
   return `${toolName} not found. Install ${toolName} and ensure it is available in PATH, or set ${envVar}. Original error: ${err.message}`;
 }
 
+function parseKbitsPerSecond(value) {
+  if (!value) return 0;
+  const match = value.match(/([\d.]+)\s*kbits\/s/i);
+  if (!match) return 0;
+  const parsed = parseFloat(match[1]);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function runVersionCheck(toolName, command) {
   return new Promise((resolve) => {
     let stdout = "";
@@ -402,22 +410,53 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
       }
     });
 
-    ffmpegProcess.stdout.on("data", (data) => {
-      const output = data.toString();
+    let stdoutBuffer = "";
+    const progressStats = {
+      fps: 0,
+      kbps: 0,
+      speed: 0,
+    };
 
-      // Parse progress output
-      const lines = output.split("\n");
-      for (const line of lines) {
-        if (line.startsWith("out_time_ms=")) {
-          const timeMs = parseInt(line.split("=")[1]);
-          if (timeMs > 0 && totalDuration > 0) {
+    ffmpegProcess.stdout.on("data", (data) => {
+      stdoutBuffer += data.toString();
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || "";
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+
+        if (line.startsWith("fps=")) {
+          const value = parseFloat(line.split("=")[1]);
+          if (Number.isFinite(value)) progressStats.fps = value;
+          continue;
+        }
+
+        if (line.startsWith("bitrate=")) {
+          progressStats.kbps = parseKbitsPerSecond(line.split("=")[1]);
+          continue;
+        }
+
+        if (line.startsWith("speed=")) {
+          const value = parseFloat(line.split("=")[1]);
+          if (Number.isFinite(value)) progressStats.speed = value;
+          continue;
+        }
+
+        if (
+          line.startsWith("out_time_ms=") ||
+          line.startsWith("out_time_us=")
+        ) {
+          const timeMs = parseInt(line.split("=")[1], 10);
+          if (Number.isFinite(timeMs) && timeMs > 0 && totalDuration > 0) {
             const currentTime = timeMs / 1000000; // Convert microseconds to seconds
             const percent = Math.min(99, (currentTime / totalDuration) * 100);
 
             event.sender.send("encode-progress", {
               percent,
-              currentFps: 0,
-              currentKbps: 0,
+              currentFps: progressStats.fps,
+              currentKbps: progressStats.kbps,
+              currentSpeed: progressStats.speed,
             });
           }
         }
@@ -434,8 +473,9 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
       if (code === 0) {
         event.sender.send("encode-progress", {
           percent: 100,
-          currentFps: 0,
-          currentKbps: 0,
+          currentFps: progressStats.fps,
+          currentKbps: progressStats.kbps,
+          currentSpeed: progressStats.speed,
         });
         resolve({ success: true });
       } else {
@@ -488,22 +528,53 @@ ipcMain.handle("encode-custom", (event, commandString) => {
       }
     });
 
-    ffmpegProcess.stdout.on("data", (data) => {
-      const output = data.toString();
+    let stdoutBuffer = "";
+    const progressStats = {
+      fps: 0,
+      kbps: 0,
+      speed: 0,
+    };
 
-      // Parse progress output
-      const lines = output.split("\n");
-      for (const line of lines) {
-        if (line.startsWith("out_time_ms=")) {
-          const timeMs = parseInt(line.split("=")[1]);
-          if (timeMs > 0 && totalDuration > 0) {
+    ffmpegProcess.stdout.on("data", (data) => {
+      stdoutBuffer += data.toString();
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || "";
+
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) continue;
+
+        if (line.startsWith("fps=")) {
+          const value = parseFloat(line.split("=")[1]);
+          if (Number.isFinite(value)) progressStats.fps = value;
+          continue;
+        }
+
+        if (line.startsWith("bitrate=")) {
+          progressStats.kbps = parseKbitsPerSecond(line.split("=")[1]);
+          continue;
+        }
+
+        if (line.startsWith("speed=")) {
+          const value = parseFloat(line.split("=")[1]);
+          if (Number.isFinite(value)) progressStats.speed = value;
+          continue;
+        }
+
+        if (
+          line.startsWith("out_time_ms=") ||
+          line.startsWith("out_time_us=")
+        ) {
+          const timeMs = parseInt(line.split("=")[1], 10);
+          if (Number.isFinite(timeMs) && timeMs > 0 && totalDuration > 0) {
             const currentTime = timeMs / 1000000; // Convert microseconds to seconds
             const percent = Math.min(99, (currentTime / totalDuration) * 100);
 
             event.sender.send("encode-progress", {
               percent,
-              currentFps: 0,
-              currentKbps: 0,
+              currentFps: progressStats.fps,
+              currentKbps: progressStats.kbps,
+              currentSpeed: progressStats.speed,
             });
           }
         }
@@ -515,8 +586,9 @@ ipcMain.handle("encode-custom", (event, commandString) => {
       if (code === 0) {
         event.sender.send("encode-progress", {
           percent: 100,
-          currentFps: 0,
-          currentKbps: 0,
+          currentFps: progressStats.fps,
+          currentKbps: progressStats.kbps,
+          currentSpeed: progressStats.speed,
         });
         resolve({ success: true });
       } else {

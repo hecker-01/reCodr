@@ -516,21 +516,31 @@ async function startEncode() {
 
 // Progress handler
 ipcRenderer.on("encode-progress", (event, progress) => {
-  const percent = Math.round(progress.percent || 0);
-  document.getElementById("progressPercent").textContent = percent + "%";
-  document.getElementById("progressFill").style.width = percent + "%";
-  document.getElementById("fps").textContent = (
-    progress.currentFps || 0
-  ).toFixed(1);
-  document.getElementById("speed").textContent = progress.currentKbps
-    ? (progress.currentKbps / 1000).toFixed(2) + " Mbps"
-    : "--";
+  const percentRaw = Number(progress.percent || 0);
+  const percent = Math.max(0, Math.min(100, percentRaw));
+  document.getElementById("progressPercent").textContent =
+    `${percent.toFixed(1)}%`;
+  document.getElementById("progressFill").style.width = `${percent}%`;
+
+  const fpsValue = Number(progress.currentFps || 0);
+  document.getElementById("fps").textContent =
+    fpsValue > 0 ? fpsValue.toFixed(1) : "--";
+
+  const speedValue = Number(progress.currentSpeed || 0);
+  if (speedValue > 0) {
+    document.getElementById("speed").textContent = `${speedValue.toFixed(2)}x`;
+  } else if (progress.currentKbps) {
+    document.getElementById("speed").textContent =
+      (progress.currentKbps / 1000).toFixed(2) + " Mbps";
+  } else {
+    document.getElementById("speed").textContent = "--";
+  }
 
   const elapsed = (Date.now() - encodeStartTime) / 1000;
   document.getElementById("elapsedTime").textContent = formatDuration(elapsed);
 
-  if (progress.percent > 0) {
-    const total = (elapsed / progress.percent) * 100;
+  if (percent > 0) {
+    const total = (elapsed / percent) * 100;
     const remaining = total - elapsed;
     document.getElementById("eta").textContent = formatDuration(remaining);
   }
