@@ -1,13 +1,41 @@
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, powerSaveBlocker } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
 
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-background-timer-throttling");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+
 let mainWindow;
+let activeEncodeJobs = 0;
+let encodePowerBlockerId = null;
 let binaryConfig = {
   ffmpegPath: "",
   ffprobePath: "",
 };
+
+function beginEncodePerformanceMode() {
+  activeEncodeJobs += 1;
+  if (encodePowerBlockerId === null) {
+    encodePowerBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+    console.log("Enabled encode performance mode", {
+      activeEncodeJobs,
+      encodePowerBlockerId,
+    });
+  }
+}
+
+function endEncodePerformanceMode() {
+  activeEncodeJobs = Math.max(0, activeEncodeJobs - 1);
+  if (activeEncodeJobs === 0 && encodePowerBlockerId !== null) {
+    if (powerSaveBlocker.isStarted(encodePowerBlockerId)) {
+      powerSaveBlocker.stop(encodePowerBlockerId);
+    }
+    console.log("Disabled encode performance mode");
+    encodePowerBlockerId = null;
+  }
+}
 
 function getConfigFilePath() {
   return path.join(app.getPath("userData"), "binary-config.json");
@@ -82,6 +110,27 @@ function parseKbitsPerSecond(value) {
   if (!match) return 0;
   const parsed = parseFloat(match[1]);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function isNvencCodec(codec) {
+  return codec === "hevc_nvenc" || codec === "h264_nvenc";
+}
+
+function applyVideoEncodingArgs(args, videoCodec, videoQuality, videoPreset) {
+  args.push("-c:v", videoCodec);
+
+  if (isNvencCodec(videoCodec)) {
+    args.push("-cq", String(videoQuality));
+    args.push("-preset", String(videoPreset));
+    args.push("-rc:v", "vbr");
+    args.push("-b:v", "0");
+    return;
+  }
+
+  if (videoCodec === "vp9" || videoCodec === "av1") {
+    args.push("-crf", String(videoQuality));
+    args.push("-cpu-used", String(videoPreset));
+  }
 }
 
 function runVersionCheck(toolName, command) {
@@ -311,7 +360,27 @@ ipcMain.handle("get-video-info", async (event, filePath) => {
 
 ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
   return new Promise((resolve, reject) => {
-    const args = ["-i", inputPath];
+    beginEncodePerformanceMode();
+    let settled = false;
+    const finalizeEncodeSession = () => {
+      if (settled) return;
+      settled = true;
+      endEncodePerformanceMode();
+    };
+
+    const videoCodec = options.videoCodec || "hevc_nvenc";
+    const videoQuality = options.videoQuality || "22";
+    const videoPreset =
+      options.videoPreset || (isNvencCodec(videoCodec) ? "p1" : "5");
+    const nvencMode = isNvencCodec(videoCodec);
+
+    const args = [];
+    if (nvencMode) {
+      // Use CUDA decode path when available to reduce CPU bottlenecks and improve overall GPU utilization.
+      args.push("-hwaccel", "cuda");
+      args.push("-hwaccel_output_format", "cuda");
+    }
+    args.push("-i", inputPath);
 
     // Map video stream
     args.push("-map", "0:v");
@@ -328,17 +397,8 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
       args.push("-map", `0:${t.index}`);
     });
 
-    // Get video codec settings
-    const videoCodec = options.videoCodec || "hevc_nvenc";
-    args.push("-c:v", videoCodec);
-
-    // Apply codec-specific quality settings
-    if (videoCodec === "hevc_nvenc" || videoCodec === "h264_nvenc") {
-      args.push("-cq", "22");
-      args.push("-preset", "p4");
-    } else if (videoCodec === "vp9" || videoCodec === "av1") {
-      args.push("-crf", "22");
-    }
+    // Apply selected video codec settings
+    applyVideoEncodingArgs(args, videoCodec, videoQuality, videoPreset);
 
     // Audio codec settings per track
     audioTracks.forEach((t, idx) => {
@@ -371,11 +431,14 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
 
     // If no tracks specified, fall back to copy all
     if (audioTracks.length === 0 && subtitleTracks.length === 0) {
-      args.length = 2; // Reset to just -i inputPath
+      args.length = 0;
+      if (nvencMode) {
+        args.push("-hwaccel", "cuda");
+        args.push("-hwaccel_output_format", "cuda");
+      }
+      args.push("-i", inputPath);
       args.push("-map", "0");
-      args.push("-c:v", "hevc_nvenc");
-      args.push("-cq", "22");
-      args.push("-preset", "p4");
+      applyVideoEncodingArgs(args, videoCodec, videoQuality, videoPreset);
       args.push("-c:a", "copy");
       args.push("-c:s", "copy");
     }
@@ -465,11 +528,13 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
 
     ffmpegProcess.on("error", (err) => {
       console.error("FFmpeg process error:", err);
+      finalizeEncodeSession();
       reject(new Error(formatBinaryMissingMessage("ffmpeg", err)));
     });
 
     ffmpegProcess.on("close", (code) => {
       console.log("FFmpeg process closed with code:", code);
+      finalizeEncodeSession();
       if (code === 0) {
         event.sender.send("encode-progress", {
           percent: 100,
@@ -488,6 +553,14 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
 // Handle custom ffmpeg commands
 ipcMain.handle("encode-custom", (event, commandString) => {
   return new Promise((resolve, reject) => {
+    beginEncodePerformanceMode();
+    let settled = false;
+    const finalizeEncodeSession = () => {
+      if (settled) return;
+      settled = true;
+      endEncodePerformanceMode();
+    };
+
     // Parse the command string to extract the actual ffmpeg arguments
     // The command comes as: ffmpeg -i "input" ... "output"
     // We need to split it properly, respecting quoted strings
@@ -583,6 +656,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
 
     ffmpegProcess.on("close", (code) => {
       console.log("Custom ffmpeg process closed with code:", code);
+      finalizeEncodeSession();
       if (code === 0) {
         event.sender.send("encode-progress", {
           percent: 100,
@@ -598,6 +672,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
 
     ffmpegProcess.on("error", (err) => {
       console.error("Custom ffmpeg process error:", err);
+      finalizeEncodeSession();
       reject(new Error(formatBinaryMissingMessage("ffmpeg", err)));
     });
   });

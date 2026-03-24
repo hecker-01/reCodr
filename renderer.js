@@ -10,7 +10,7 @@ let subtitleTracks = [];
 let outputFormat = "mkv";
 let videoCodec = "hevc_nvenc";
 let videoQuality = "22";
-let videoPreset = "p4";
+let videoPreset = "p1";
 let encodeStartTime = null;
 let commandModified = false;
 let viewBeforeBinaryConfig = "drop";
@@ -397,8 +397,8 @@ function updateQualityAndPresetOptions() {
       <option value="35">CQ 35 (Low)</option>
     `;
     videoPresetSelect.innerHTML = `
+      <option value="p1">P1 (Fast, Higher GPU Use)</option>
       <option value="p4">P4 (Balance)</option>
-      <option value="p1">P1 (Fast)</option>
       <option value="p7">P7 (Slow)</option>
     `;
   } else {
@@ -428,7 +428,13 @@ function updateCommand() {
   const inputFile = JSON.stringify(currentFile);
   const outputFile = JSON.stringify(outputPath);
 
-  const parts = [`ffmpeg -i ${inputFile}`, "-map 0:v"];
+  const isNvenc = videoCodec === "hevc_nvenc" || videoCodec === "h264_nvenc";
+
+  const parts = ["ffmpeg"];
+  if (isNvenc) {
+    parts.push("-hwaccel cuda", "-hwaccel_output_format cuda");
+  }
+  parts.push(`-i ${inputFile}`, "-map 0:v");
 
   const enabledAudio = audioTracks.filter((t) => t.enabled);
   enabledAudio.forEach((t) => parts.push(`-map 0:${t.index}`));
@@ -438,8 +444,9 @@ function updateCommand() {
 
   // Add video codec with appropriate settings
   let videoCodecCmd = `-c:v ${videoCodec}`;
-  if (videoCodec === "hevc_nvenc" || videoCodec === "h264_nvenc") {
+  if (isNvenc) {
     videoCodecCmd += ` -cq ${videoQuality} -preset ${videoPreset}`;
+    videoCodecCmd += " -rc:v vbr -b:v 0";
   } else if (videoCodec === "vp9") {
     videoCodecCmd += ` -crf ${videoQuality} -cpu-used ${videoPreset}`;
   } else if (videoCodec === "av1") {
