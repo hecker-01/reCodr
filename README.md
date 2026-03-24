@@ -47,6 +47,7 @@ The application uses optimized ffmpeg settings:
 ### ffmpeg with NVENC Support
 
 You need ffmpeg installed with NVIDIA NVENC support.
+The app resolves binaries from your system installation (`ffmpeg` / `ffprobe` on PATH), or from `FFMPEG_PATH` and `FFPROBE_PATH` if you set them.
 
 **Option 1: Install pre-built ffmpeg**
 

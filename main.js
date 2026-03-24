@@ -1,68 +1,17 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
-const fs = require("fs");
 const { spawn } = require("child_process");
-const ffmpegStatic = require("ffmpeg-static");
-const ffprobeStatic = require("ffprobe-static");
 
 let mainWindow;
 
-function unique(items) {
-  return [...new Set(items.filter(Boolean))];
-}
-
-function withAsarUnpacked(p) {
-  if (!p) return p;
-  return p.includes("app.asar")
-    ? p.replace("app.asar", "app.asar.unpacked")
-    : p;
-}
-
 function resolveBinaryPath(toolName) {
   const envVar = toolName === "ffmpeg" ? "FFMPEG_PATH" : "FFPROBE_PATH";
-  const systemBinary =
-    process.platform === "win32" ? `${toolName}.exe` : toolName;
+  return process.env[envVar] || toolName;
+}
 
-  const modulePath =
-    toolName === "ffmpeg"
-      ? typeof ffmpegStatic === "string"
-        ? ffmpegStatic
-        : ffmpegStatic?.path
-      : ffprobeStatic?.path;
-
-  const bundledFallback =
-    toolName === "ffmpeg"
-      ? path.join(
-          __dirname,
-          "node_modules",
-          "ffmpeg-static",
-          process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg",
-        )
-      : path.join(
-          __dirname,
-          "node_modules",
-          "ffprobe-static",
-          "bin",
-          process.platform,
-          process.arch,
-          process.platform === "win32" ? "ffprobe.exe" : "ffprobe",
-        );
-
-  const candidates = unique([
-    process.env[envVar],
-    modulePath,
-    withAsarUnpacked(modulePath),
-    bundledFallback,
-  ]);
-
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && fs.existsSync(candidate)) {
-      return candidate;
-    }
-  }
-
-  // Last resort: rely on system PATH
-  return systemBinary;
+function formatBinaryMissingMessage(toolName, err) {
+  const envVar = toolName === "ffmpeg" ? "FFMPEG_PATH" : "FFPROBE_PATH";
+  return `${toolName} not found. Install ${toolName} and ensure it is available in PATH, or set ${envVar}. Original error: ${err.message}`;
 }
 
 function createWindow() {
@@ -152,7 +101,7 @@ ipcMain.handle("get-video-info", async (event, filePath) => {
     ffprobeProcess.on("error", (err) => {
       clearTimeout(timeout);
       if (!timedOut) {
-        reject(new Error(`Failed to spawn ffprobe: ${err.message}`));
+        reject(new Error(formatBinaryMissingMessage("ffprobe", err)));
       }
     });
 
@@ -299,7 +248,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
 
     ffmpegProcess.on("error", (err) => {
       console.error("FFmpeg process error:", err);
-      reject(new Error(`Failed to spawn ffmpeg: ${err.message}`));
+      reject(new Error(formatBinaryMissingMessage("ffmpeg", err)));
     });
 
     ffmpegProcess.on("close", (code) => {
@@ -399,7 +348,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
 
     ffmpegProcess.on("error", (err) => {
       console.error("Custom ffmpeg process error:", err);
-      reject(new Error(`Failed to spawn ffmpeg: ${err.message}`));
+      reject(new Error(formatBinaryMissingMessage("ffmpeg", err)));
     });
   });
 });

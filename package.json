@@ -19,10 +19,6 @@
   ],
   "author": "",
   "license": "ISC",
-  "dependencies": {
-    "ffmpeg-static": "^5.3.0",
-    "ffprobe-static": "^3.1.0"
-  },
   "devDependencies": {
     "electron": "^28.0.0",
     "electron-builder": "^24.9.1"
