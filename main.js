@@ -371,7 +371,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
     const videoCodec = options.videoCodec || "hevc_nvenc";
     const videoQuality = options.videoQuality || "22";
     const videoPreset =
-      options.videoPreset || (isNvencCodec(videoCodec) ? "p1" : "5");
+      options.videoPreset || (isNvencCodec(videoCodec) ? "p4" : "5");
     const nvencMode = isNvencCodec(videoCodec);
 
     const args = [];

@@ -10,7 +10,7 @@ let subtitleTracks = [];
 let outputFormat = "mkv";
 let videoCodec = "hevc_nvenc";
 let videoQuality = "22";
-let videoPreset = "p1";
+let videoPreset = "p4";
 let encodeStartTime = null;
 let commandModified = false;
 let viewBeforeBinaryConfig = "drop";
@@ -178,9 +178,47 @@ function displayFileInfo() {
   `;
 }
 
+function estimateTrackSizeMb(stream, durationSeconds) {
+  const bytesFromTags = parseFloat(stream?.tags?.NUMBER_OF_BYTES || "");
+  if (Number.isFinite(bytesFromTags) && bytesFromTags > 0) {
+    return bytesFromTags / (1024 * 1024);
+  }
+
+  const streamBitrate = parseFloat(stream?.bit_rate || "");
+  if (
+    Number.isFinite(streamBitrate) &&
+    streamBitrate > 0 &&
+    durationSeconds > 0
+  ) {
+    const bytes = (streamBitrate * durationSeconds) / 8;
+    return bytes / (1024 * 1024);
+  }
+
+  const tagBps = parseFloat(stream?.tags?.BPS || "");
+  if (Number.isFinite(tagBps) && tagBps > 0 && durationSeconds > 0) {
+    const bytes = (tagBps * durationSeconds) / 8;
+    return bytes / (1024 * 1024);
+  }
+
+  return null;
+}
+
+function formatTrackSizeLabel(sizeMb) {
+  if (!Number.isFinite(sizeMb) || sizeMb <= 0) {
+    return "Size N/A";
+  }
+
+  if (sizeMb >= 1024) {
+    return `${(sizeMb / 1024).toFixed(2)} GB`;
+  }
+
+  return `${sizeMb.toFixed(2)} MB`;
+}
+
 // Display audio tracks
 function displayAudioTracks() {
   const streams = metadata.streams.filter((s) => s.codec_type === "audio");
+  const durationSeconds = parseFloat(metadata?.format?.duration || "0") || 0;
 
   if (streams.length === 0) {
     audioSection.classList.add("hidden");
@@ -197,6 +235,9 @@ function displayAudioTracks() {
     language: (s.tags?.language || "und").toUpperCase(),
     codec: s.codec_name?.toUpperCase() || "Unknown",
     channels: s.channels || "?",
+    currentSizeLabel: formatTrackSizeLabel(
+      estimateTrackSizeMb(s, durationSeconds),
+    ),
   }));
 
   renderAudioTracks();
@@ -214,7 +255,7 @@ function renderAudioTracks() {
       <input type="checkbox" ${t.enabled ? "checked" : ""} onchange="toggleAudio(${idx}, this.checked)">
       <div class="track-info">
         <span class="track-name">${t.title || "Track " + (idx + 1)}</span>
-        <span class="track-meta">${t.language} · ${t.codec} · ${t.channels}ch</span>
+        <span class="track-meta">${t.language} · ${t.codec} · ${t.channels}ch · ${t.currentSizeLabel}</span>
       </div>
       <select class="track-action" onchange="setAudioAction(${idx}, this.value)" ${!t.enabled ? "disabled" : ""}>
         <option value="copy" ${t.action === "copy" ? "selected" : ""}>Copy</option>
@@ -231,6 +272,7 @@ function renderAudioTracks() {
 // Display subtitle tracks
 function displaySubtitleTracks() {
   const streams = metadata.streams.filter((s) => s.codec_type === "subtitle");
+  const durationSeconds = parseFloat(metadata?.format?.duration || "0") || 0;
 
   if (streams.length === 0) {
     subtitleSection.classList.add("hidden");
@@ -255,6 +297,9 @@ function displaySubtitleTracks() {
       codec: s.codec_name?.toUpperCase() || "Unknown",
       type: isImage ? "Image" : "Text",
       isImage,
+      currentSizeLabel: formatTrackSizeLabel(
+        estimateTrackSizeMb(s, durationSeconds),
+      ),
     };
   });
 
@@ -273,7 +318,7 @@ function renderSubtitleTracks() {
       <input type="checkbox" ${t.enabled ? "checked" : ""} onchange="toggleSubtitle(${idx}, this.checked)">
       <div class="track-info">
         <span class="track-name">${t.title || "Track " + (idx + 1)}</span>
-        <span class="track-meta">${t.language} · ${t.codec} · ${t.type}</span>
+        <span class="track-meta">${t.language} · ${t.codec} · ${t.type} · ${t.currentSizeLabel}</span>
       </div>
       <select class="track-action" onchange="setSubtitleAction(${idx}, this.value)" ${!t.enabled ? "disabled" : ""}>
         <option value="copy" ${t.action === "copy" ? "selected" : ""}>Copy</option>
@@ -397,9 +442,9 @@ function updateQualityAndPresetOptions() {
       <option value="35">CQ 35 (Low)</option>
     `;
     videoPresetSelect.innerHTML = `
-      <option value="p1">P1 (Fast, Higher GPU Use)</option>
-      <option value="p4">P4 (Balance)</option>
-      <option value="p7">P7 (Slow)</option>
+      <option value="p4">P4 (Default: better compression)</option>
+      <option value="p1">P1 (Fast: higher speed, larger files)</option>
+      <option value="p7">P7 (Slow: best compression)</option>
     `;
   } else {
     // VP9 and AV1 use CRF for quality
@@ -759,8 +804,12 @@ function resetUI() {
   subtitleTracks = [];
   outputFormat = "mkv";
   videoCodec = "hevc_nvenc";
+  videoQuality = "22";
+  videoPreset = "p4";
   outputFormatSelect.value = "mkv";
   videoCodecSelect.value = "hevc_nvenc";
+  videoQualitySelect.value = "22";
+  videoPresetSelect.value = "p4";
 
   dropZone.classList.remove("hidden");
   settingsView.classList.add("hidden");
