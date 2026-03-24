@@ -15,6 +15,22 @@ let binaryConfig = {
   ffprobePath: "",
 };
 
+function getWindowIconPath() {
+  const iconName =
+    process.platform === "win32"
+      ? "icon.ico"
+      : process.platform === "darwin"
+        ? "icon.icns"
+        : "icon.png";
+
+  const candidates = [
+    path.join(__dirname, "assets", iconName),
+    path.join(process.resourcesPath, "assets", iconName),
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate));
+}
+
 function beginEncodePerformanceMode() {
   activeEncodeJobs += 1;
   if (encodePowerBlockerId === null) {
@@ -133,6 +149,17 @@ function applyVideoEncodingArgs(args, videoCodec, videoQuality, videoPreset) {
   }
 }
 
+function ensureRealtimeProgressArgs(args) {
+  if (!args.includes("-progress")) {
+    args.push("-progress", "pipe:1");
+  }
+
+  if (!args.includes("-stats_period")) {
+    // Lower period keeps UI progress responsive during long encodes.
+    args.push("-stats_period", "0.25");
+  }
+}
+
 function runVersionCheck(toolName, command) {
   return new Promise((resolve) => {
     let stdout = "";
@@ -225,6 +252,8 @@ async function verifyBinaryConfig(config = binaryConfig) {
 }
 
 function createWindow() {
+  const windowIconPath = getWindowIconPath();
+
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 900,
@@ -234,15 +263,7 @@ function createWindow() {
       contextIsolation: false,
       backgroundThrottling: false,
     },
-    icon: path.join(
-      __dirname,
-      "assets",
-      process.platform === "win32"
-        ? "icon.ico"
-        : process.platform === "darwin"
-          ? "icon.icns"
-          : "icon.png",
-    ),
+    icon: windowIconPath,
   });
 
   // Prevent throttling when minimized or in background
@@ -261,6 +282,10 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  if (process.platform === "win32") {
+    app.setAppUserModelId("com.recodr.app");
+  }
+
   loadBinaryConfig();
   createWindow();
 });
@@ -443,8 +468,8 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
       args.push("-c:s", "copy");
     }
 
-    // Add progress output
-    args.push("-progress", "pipe:1");
+    // Add progress output with frequent update cadence.
+    ensureRealtimeProgressArgs(args);
     args.push(outputPath);
 
     const ffmpegPath = resolveBinaryPath("ffmpeg");
@@ -572,10 +597,8 @@ ipcMain.handle("encode-custom", (event, commandString) => {
       args.shift();
     }
 
-    // Add progress reporting if not already present
-    if (!args.includes("-progress")) {
-      args.push("-progress", "pipe:1");
-    }
+    // Ensure progress reporting is active and frequent.
+    ensureRealtimeProgressArgs(args);
 
     const ffmpegPath = resolveBinaryPath("ffmpeg");
     console.log("Starting custom ffmpeg at:", ffmpegPath);

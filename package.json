@@ -35,11 +35,11 @@
       "index.html",
       "renderer.js",
       "styles.css",
+      "assets/**/*",
       "node_modules/**/*"
     ],
     "win": {
       "target": [
-        "portable",
         "nsis"
       ],
       "icon": "assets/icon.ico",
