@@ -132,10 +132,78 @@ function isNvencCodec(codec) {
   return codec === "hevc_nvenc" || codec === "h264_nvenc";
 }
 
+function getEncoderFamily(codec) {
+  if (codec === "hevc_nvenc" || codec === "h264_nvenc") {
+    return "nvenc";
+  }
+  if (codec === "hevc_amf" || codec === "h264_amf") {
+    return "amf";
+  }
+  if (codec === "hevc_qsv" || codec === "h264_qsv") {
+    return "qsv";
+  }
+  if (codec === "hevc_videotoolbox" || codec === "h264_videotoolbox") {
+    return "videotoolbox";
+  }
+  if (codec === "libx265" || codec === "libx264") {
+    return "software";
+  }
+  return null;
+}
+
+function mapAmfPreset(preset) {
+  const p = String(preset).toLowerCase();
+  if (p === "fast" || p === "p1" || p === "p2") return "speed";
+  if (p === "slow" || p === "p6" || p === "p7") return "quality";
+  return "balanced";
+}
+
+function mapQsvPreset(preset) {
+  const p = String(preset).toLowerCase();
+  if (p === "fast" || p === "p1" || p === "p2") return "veryfast";
+  if (p === "slow" || p === "p6" || p === "p7") return "veryslow";
+  return "medium";
+}
+
+function mapSoftwarePreset(preset) {
+  const p = String(preset).toLowerCase();
+  if (p === "fast" || p === "p1" || p === "p2") return "veryfast";
+  if (p === "slow" || p === "p6" || p === "p7") return "veryslow";
+  if (["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"].includes(p)) {
+    return p;
+  }
+  return "medium";
+}
+
+function mapCqToVideotoolboxQuality(cq) {
+  // VideoToolbox -q:v uses 1-100 scale where lower is better quality
+  // Map common CQ values: 15→30, 22→50, 28→65, 35→80
+  const cqNum = parseInt(cq, 10);
+  if (cqNum <= 15) return 30;
+  if (cqNum <= 22) return Math.round(30 + ((cqNum - 15) / 7) * 20);
+  if (cqNum <= 28) return Math.round(50 + ((cqNum - 22) / 6) * 15);
+  if (cqNum <= 35) return Math.round(65 + ((cqNum - 28) / 7) * 15);
+  return 80;
+}
+
+function mapCqToVideotoolboxBitrate(cq) {
+  // hevc_videotoolbox requires bitrate mode, map CQ to approximate bitrate
+  // Lower CQ = higher quality = higher bitrate
+  const cqNum = parseInt(cq, 10);
+  if (cqNum <= 15) return "20M";
+  if (cqNum <= 18) return "15M";
+  if (cqNum <= 22) return "10M";
+  if (cqNum <= 26) return "7M";
+  if (cqNum <= 30) return "5M";
+  if (cqNum <= 35) return "3M";
+  return "2M";
+}
+
 function applyVideoEncodingArgs(args, videoCodec, videoQuality, videoPreset) {
   args.push("-c:v", videoCodec);
+  const family = getEncoderFamily(videoCodec);
 
-  if (isNvencCodec(videoCodec)) {
+  if (family === "nvenc") {
     args.push("-cq", String(videoQuality));
     args.push("-preset", String(videoPreset));
     args.push("-rc:v", "vbr");
@@ -143,10 +211,54 @@ function applyVideoEncodingArgs(args, videoCodec, videoQuality, videoPreset) {
     return;
   }
 
+  if (family === "amf") {
+    args.push("-qp_i", String(videoQuality));
+    args.push("-qp_p", String(videoQuality));
+    args.push("-quality", mapAmfPreset(videoPreset));
+    return;
+  }
+
+  if (family === "qsv") {
+    args.push("-global_quality", String(videoQuality));
+    args.push("-preset", mapQsvPreset(videoPreset));
+    return;
+  }
+
+  if (family === "videotoolbox") {
+    // h264_videotoolbox supports -q:v, but hevc_videotoolbox requires bitrate mode
+    if (videoCodec === "hevc_videotoolbox") {
+      // Map CQ to approximate bitrate (higher CQ = lower bitrate)
+      const bitrate = mapCqToVideotoolboxBitrate(videoQuality);
+      args.push("-b:v", bitrate);
+    } else {
+      const vtQuality = mapCqToVideotoolboxQuality(videoQuality);
+      args.push("-q:v", String(vtQuality));
+    }
+    return;
+  }
+
+  if (family === "software") {
+    args.push("-crf", String(videoQuality));
+    args.push("-preset", mapSoftwarePreset(videoPreset));
+    return;
+  }
+
   if (videoCodec === "vp9" || videoCodec === "av1") {
     args.push("-crf", String(videoQuality));
     args.push("-cpu-used", String(videoPreset));
   }
+}
+
+function applyHwaccelArgs(args, videoCodec) {
+  const family = getEncoderFamily(videoCodec);
+  if (family === "nvenc") {
+    args.push("-hwaccel", "cuda");
+    args.push("-hwaccel_output_format", "cuda");
+  } else if (family === "qsv") {
+    args.push("-hwaccel", "qsv");
+    args.push("-hwaccel_output_format", "qsv");
+  }
+  // AMF, VideoToolbox, and software encoders don't need hwaccel flags
 }
 
 function ensureRealtimeProgressArgs(args) {
@@ -324,6 +436,101 @@ ipcMain.handle("save-binary-config", async (event, config) => {
   };
 });
 
+ipcMain.handle("detect-encoders", async () => {
+  const encoderFamilies = {
+    nvenc: { hevc: "hevc_nvenc", h264: "h264_nvenc" },
+    amf: { hevc: "hevc_amf", h264: "h264_amf" },
+    qsv: { hevc: "hevc_qsv", h264: "h264_qsv" },
+    videotoolbox: { hevc: "hevc_videotoolbox", h264: "h264_videotoolbox" },
+    software: { hevc: "libx265", h264: "libx264" },
+  };
+
+  const emptyResult = {
+    available: [],
+    encoders: {},
+    recommended: null,
+  };
+
+  return new Promise((resolve) => {
+    const ffmpegPath = resolveBinaryPath("ffmpeg");
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+
+    const child = spawn(ffmpegPath, ["-encoders"]);
+
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+      resolve(emptyResult);
+    }, 10000);
+
+    child.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    child.on("error", () => {
+      clearTimeout(timeout);
+      if (!timedOut) {
+        resolve(emptyResult);
+      }
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (timedOut) return;
+
+      if (code !== 0) {
+        resolve(emptyResult);
+        return;
+      }
+
+      const combined = `${stdout}\n${stderr}`;
+      const availableEncoders = new Set();
+
+      for (const line of combined.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        // ffmpeg -encoders output format: " V..... encoder_name  description"
+        const match = trimmed.match(/^\s*V[.\w]+\s+(\S+)/);
+        if (match) {
+          availableEncoders.add(match[1]);
+        }
+      }
+
+      const available = [];
+      const encoders = {};
+      const hardwarePriority = ["nvenc", "amf", "qsv", "videotoolbox"];
+
+      for (const [family, codecs] of Object.entries(encoderFamilies)) {
+        const hasHevc = availableEncoders.has(codecs.hevc);
+        const hasH264 = availableEncoders.has(codecs.h264);
+
+        // Include encoder family if at least one codec is available
+        if (hasHevc || hasH264) {
+          available.push(family);
+          encoders[family] = {};
+          if (hasHevc) encoders[family].hevc = codecs.hevc;
+          if (hasH264) encoders[family].h264 = codecs.h264;
+        }
+      }
+
+      const recommended =
+        hardwarePriority.find((hw) => available.includes(hw)) ||
+        (available.includes("software") ? "software" : null);
+
+      resolve({
+        available,
+        encoders,
+        recommended,
+      });
+    });
+  });
+});
+
 // IPC handlers for video processing
 ipcMain.handle("get-video-info", async (event, filePath) => {
   return new Promise((resolve, reject) => {
@@ -395,16 +602,12 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
 
     const videoCodec = options.videoCodec || "hevc_nvenc";
     const videoQuality = options.videoQuality || "22";
+    const encoderFamily = getEncoderFamily(videoCodec);
     const videoPreset =
-      options.videoPreset || (isNvencCodec(videoCodec) ? "p4" : "5");
-    const nvencMode = isNvencCodec(videoCodec);
+      options.videoPreset || (encoderFamily === "nvenc" ? "p4" : "medium");
 
     const args = [];
-    if (nvencMode) {
-      // Use CUDA decode path when available to reduce CPU bottlenecks and improve overall GPU utilization.
-      args.push("-hwaccel", "cuda");
-      args.push("-hwaccel_output_format", "cuda");
-    }
+    applyHwaccelArgs(args, videoCodec);
     args.push("-i", inputPath);
 
     // Map video stream
@@ -457,10 +660,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
     // If no tracks specified, fall back to copy all
     if (audioTracks.length === 0 && subtitleTracks.length === 0) {
       args.length = 0;
-      if (nvencMode) {
-        args.push("-hwaccel", "cuda");
-        args.push("-hwaccel_output_format", "cuda");
-      }
+      applyHwaccelArgs(args, videoCodec);
       args.push("-i", inputPath);
       args.push("-map", "0");
       applyVideoEncodingArgs(args, videoCodec, videoQuality, videoPreset);

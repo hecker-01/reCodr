@@ -212,6 +212,17 @@ body {
   min-width: 150px;
 }
 
+.encoder-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.encoder-status {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
 .info-value-select:hover {
   border-color: var(--text-muted);
   background-color: var(--bg-tertiary);

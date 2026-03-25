@@ -8,28 +8,18 @@ let metadata = null;
 let audioTracks = [];
 let subtitleTracks = [];
 let outputFormat = "mkv";
-let videoCodec = "hevc_nvenc";
+let videoCodec = "libx265";
 let videoQuality = "22";
-let videoPreset = "p4";
+let videoPreset = "medium";
 let encodeStartTime = null;
 let commandModified = false;
 let viewBeforeBinaryConfig = "drop";
-
-// Codec compatibility with formats
-const codecFormats = {
-  hevc_nvenc: ["mkv", "mov"],
-  h264_nvenc: ["mkv", "mp4", "mov"],
-  vp9: ["mkv", "webm"],
-  av1: ["mkv", "webm", "mov"],
+let availableEncoders = {
+  available: [],
+  encoders: {},
+  recommended: "software",
 };
-
-// Format compatibility with codecs (reverse mapping)
-const formatCodecs = {
-  mkv: ["hevc_nvenc", "h264_nvenc", "vp9", "av1"],
-  mp4: ["h264_nvenc"],
-  webm: ["vp9", "av1"],
-  mov: ["hevc_nvenc", "h264_nvenc", "av1"],
-};
+let selectedEncoderFamily = "software";
 
 // DOM Elements
 const dropZone = document.getElementById("dropZone");
@@ -51,6 +41,7 @@ const videoCodecSelect = document.getElementById("videoCodec");
 const videoQualitySelect = document.getElementById("videoQuality");
 const videoPresetSelect = document.getElementById("videoPreset");
 const openBinaryConfigBtn = document.getElementById("openBinaryConfigBtn");
+const encoderSelect = document.getElementById("encoderSelect");
 const binaryConfigView = document.getElementById("binaryConfigView");
 const ffmpegPathInput = document.getElementById("ffmpegPathInput");
 const ffprobePathInput = document.getElementById("ffprobePathInput");
@@ -117,7 +108,18 @@ commandPreview.addEventListener("input", () => {
 });
 encodeBtn.addEventListener("click", startEncode);
 
+// Encoder change listener
+encoderSelect.addEventListener("change", (e) => {
+  if (!checkCommandModification()) return;
+  selectedEncoderFamily = e.target.value;
+  updateCodecOptions();
+  updateQualityAndPresetOptions();
+  updateFormatOptions();
+  updateCommand();
+});
+
 loadBinaryConfigForm();
+detectEncoders();
 
 // Helper to check if command was modified and warn user
 function checkCommandModification() {
@@ -129,6 +131,47 @@ function checkCommandModification() {
     commandModified = false;
   }
   return true;
+}
+
+// Encoder detection
+async function detectEncoders() {
+  try {
+    availableEncoders = await ipcRenderer.invoke("detect-encoders");
+    selectedEncoderFamily = availableEncoders.recommended || "software";
+    updateEncoderSelect();
+    updateCodecOptions();
+  } catch (error) {
+    console.error("Failed to detect encoders:", error);
+    availableEncoders = {
+      available: ["software"],
+      encoders: { software: ["libx265", "libx264"] },
+      recommended: "software",
+    };
+    selectedEncoderFamily = "software";
+    updateEncoderSelect();
+    updateCodecOptions();
+  }
+}
+
+// Encoder family display labels
+const encoderLabels = {
+  nvenc: "NVIDIA NVENC",
+  amf: "AMD AMF",
+  qsv: "Intel Quick Sync",
+  videotoolbox: "Apple VideoToolbox",
+  software: "Software (CPU)",
+};
+
+// Update encoder dropdown
+function updateEncoderSelect() {
+  const encoders = availableEncoders.available || ["software"];
+
+  encoderSelect.innerHTML = encoders
+    .map((enc) => {
+      const label = encoderLabels[enc] || enc;
+      return `<option value="${enc}" ${selectedEncoderFamily === enc ? "selected" : ""}>${label}</option>`;
+    })
+    .join("");
 }
 
 // Process file
@@ -357,12 +400,15 @@ window.setSubtitleAction = (idx, action) => {
 
 // Update format options based on selected codec
 function updateFormatOptions() {
+  // Format availability is the same for all encoders - depends on codec type
+  const codecBase = getCodecBase(videoCodec);
+
   const availableFormats = {
-    hevc_nvenc: [
+    hevc: [
       { value: "mkv", label: "Matroska (MKV)" },
       { value: "mov", label: "MOV (QuickTime)" },
     ],
-    h264_nvenc: [
+    h264: [
       { value: "mkv", label: "Matroska (MKV)" },
       { value: "mp4", label: "MPEG-4 (MP4)" },
       { value: "mov", label: "MOV (QuickTime)" },
@@ -373,12 +419,12 @@ function updateFormatOptions() {
     ],
     av1: [
       { value: "mkv", label: "Matroska (MKV)" },
-      { value: "webm", label: "WebM (VP9)" },
+      { value: "webm", label: "WebM" },
       { value: "mov", label: "MOV (QuickTime)" },
     ],
   };
 
-  const options = availableFormats[videoCodec] || availableFormats.hevc_nvenc;
+  const options = availableFormats[codecBase] || availableFormats.hevc;
   outputFormatSelect.innerHTML = options
     .map(
       (opt) =>
@@ -393,28 +439,53 @@ function updateFormatOptions() {
   }
 }
 
-// Update codec options based on selected format
-function updateCodecOptions() {
-  const availableCodecs = {
-    mkv: [
-      { value: "hevc_nvenc", label: "HEVC (H.265) NVENC" },
-      { value: "h264_nvenc", label: "H.264 (AVC) NVENC" },
-      { value: "vp9", label: "VP9" },
-      { value: "av1", label: "AV1" },
-    ],
-    mp4: [{ value: "h264_nvenc", label: "H.264 (AVC) NVENC" }],
-    webm: [
-      { value: "vp9", label: "VP9" },
-      { value: "av1", label: "AV1" },
-    ],
-    mov: [
-      { value: "hevc_nvenc", label: "HEVC (H.265) NVENC" },
-      { value: "h264_nvenc", label: "H.264 (AVC) NVENC" },
-      { value: "av1", label: "AV1" },
-    ],
-  };
+// Get base codec type from encoder-specific codec name
+function getCodecBase(codec) {
+  if (codec.includes("hevc") || codec.includes("265")) return "hevc";
+  if (codec.includes("264") || codec.includes("h264")) return "h264";
+  if (codec.includes("vp9")) return "vp9";
+  if (codec.includes("av1")) return "av1";
+  return "hevc";
+}
 
-  const options = availableCodecs[outputFormat] || availableCodecs.mkv;
+// Get codec display label
+function getCodecLabel(codec) {
+  const base = getCodecBase(codec);
+  const labels = {
+    hevc: "HEVC (H.265)",
+    h264: "H.264 (AVC)",
+    vp9: "VP9",
+    av1: "AV1",
+  };
+  return labels[base] || codec;
+}
+
+// Update codec options based on selected encoder
+function updateCodecOptions() {
+  const encoderCodecsObj =
+    availableEncoders.encoders[selectedEncoderFamily] || {};
+
+  // Build codec options from what the encoder supports (object with hevc/h264 keys)
+  const options = [];
+  if (encoderCodecsObj.hevc) {
+    options.push({
+      value: encoderCodecsObj.hevc,
+      label: getCodecLabel(encoderCodecsObj.hevc),
+    });
+  }
+  if (encoderCodecsObj.h264) {
+    options.push({
+      value: encoderCodecsObj.h264,
+      label: getCodecLabel(encoderCodecsObj.h264),
+    });
+  }
+
+  // Fallback if no codecs available
+  if (options.length === 0) {
+    options.push({ value: "libx265", label: "HEVC (H.265)" });
+    options.push({ value: "libx264", label: "H.264 (AVC)" });
+  }
+
   videoCodecSelect.innerHTML = options
     .map(
       (opt) =>
@@ -429,36 +500,96 @@ function updateCodecOptions() {
   }
 }
 
-// Update quality and preset options based on selected codec
+// Update quality and preset options based on selected encoder
 function updateQualityAndPresetOptions() {
-  const isNVENC = videoCodec === "hevc_nvenc" || videoCodec === "h264_nvenc";
+  switch (selectedEncoderFamily) {
+    case "nvenc":
+      videoQualitySelect.innerHTML = `
+        <option value="22">CQ 22 (Default)</option>
+        <option value="15">CQ 15 (High)</option>
+        <option value="28">CQ 28 (Medium)</option>
+        <option value="35">CQ 35 (Low)</option>
+      `;
+      videoPresetSelect.innerHTML = `
+        <option value="p4">P4 (Default, Balanced compression)</option>
+        <option value="p1">P1 (Fastest, Lowest compression)</option>
+        <option value="p2">P2 (Faster, Lower compression)</option>
+        <option value="p3">P3 (Fast, Low compression)</option>
+        <option value="p5">P5 (Slow, High compression)</option>
+        <option value="p6">P6 (Slower, Very High compression)</option>
+        <option value="p7">P7 (Slowest, Highest compression)</option>
+      `;
+      break;
 
-  if (isNVENC) {
-    // NVENC codecs use CQ for quality and have presets
-    videoQualitySelect.innerHTML = `
-      <option value="22">CQ 22 (Default)</option>
-      <option value="15">CQ 15 (High)</option>
-      <option value="28">CQ 28 (Medium)</option>
-      <option value="35">CQ 35 (Low)</option>
-    `;
-    videoPresetSelect.innerHTML = `
-      <option value="p4">P4 (Default: better compression)</option>
-      <option value="p1">P1 (Fast: higher speed, larger files)</option>
-      <option value="p7">P7 (Slow: best compression)</option>
-    `;
-  } else {
-    // VP9 and AV1 use CRF for quality
-    videoQualitySelect.innerHTML = `
-      <option value="22">CRF 22 (Default)</option>
-      <option value="15">CRF 15 (High)</option>
-      <option value="28">CRF 28 (Medium)</option>
-      <option value="35">CRF 35 (Low)</option>
-    `;
-    videoPresetSelect.innerHTML = `
-      <option value="5">Speed 5 (Balance)</option>
-      <option value="3">Speed 3 (Slow)</option>
-      <option value="8">Speed 8 (Fast)</option>
-    `;
+    case "amf":
+      videoQualitySelect.innerHTML = `
+        <option value="22">QP 22 (Default)</option>
+        <option value="15">QP 15 (High)</option>
+        <option value="28">QP 28 (Medium)</option>
+        <option value="35">QP 35 (Low)</option>
+      `;
+      videoPresetSelect.innerHTML = `
+        <option value="balanced">Balanced</option>
+        <option value="speed">Speed</option>
+        <option value="quality">Quality</option>
+      `;
+      break;
+
+    case "qsv":
+      videoQualitySelect.innerHTML = `
+        <option value="22">Global Quality 22 (Default)</option>
+        <option value="15">Global Quality 15 (High)</option>
+        <option value="28">Global Quality 28 (Medium)</option>
+        <option value="35">Global Quality 35 (Low)</option>
+      `;
+      videoPresetSelect.innerHTML = `
+        <option value="medium">Medium</option>
+        <option value="veryfast">Very Fast</option>
+        <option value="fast">Fast</option>
+        <option value="slow">Slow</option>
+        <option value="veryslow">Very Slow</option>
+      `;
+      break;
+
+    case "videotoolbox":
+      videoQualitySelect.innerHTML = `
+        <option value="65">Quality 65 (Default)</option>
+        <option value="80">Quality 80 (High)</option>
+        <option value="50">Quality 50 (Medium)</option>
+        <option value="35">Quality 35 (Low)</option>
+      `;
+      videoPresetSelect.innerHTML = `
+        <option value="none">N/A</option>
+      `;
+      videoPresetSelect.disabled = true;
+      break;
+
+    case "software":
+    default:
+      videoQualitySelect.innerHTML = `
+        <option value="22">CRF 22 (Default)</option>
+        <option value="15">CRF 15 (High)</option>
+        <option value="28">CRF 28 (Medium)</option>
+        <option value="35">CRF 35 (Low)</option>
+      `;
+      videoPresetSelect.innerHTML = `
+        <option value="medium">Medium</option>
+        <option value="ultrafast">Ultrafast</option>
+        <option value="superfast">Superfast</option>
+        <option value="veryfast">Very Fast</option>
+        <option value="faster">Faster</option>
+        <option value="fast">Fast</option>
+        <option value="slow">Slow</option>
+        <option value="slower">Slower</option>
+        <option value="veryslow">Very Slow</option>
+      `;
+      videoPresetSelect.disabled = false;
+      break;
+  }
+
+  // Enable preset select if not videotoolbox
+  if (selectedEncoderFamily !== "videotoolbox") {
+    videoPresetSelect.disabled = false;
   }
 
   videoQuality = videoQualitySelect.value;
@@ -473,12 +604,25 @@ function updateCommand() {
   const inputFile = JSON.stringify(currentFile);
   const outputFile = JSON.stringify(outputPath);
 
-  const isNvenc = videoCodec === "hevc_nvenc" || videoCodec === "h264_nvenc";
-
   const parts = ["ffmpeg"];
-  if (isNvenc) {
-    parts.push("-hwaccel cuda", "-hwaccel_output_format cuda");
+
+  // Add hwaccel flags based on encoder family
+  switch (selectedEncoderFamily) {
+    case "nvenc":
+      parts.push("-hwaccel cuda", "-hwaccel_output_format cuda");
+      break;
+    case "qsv":
+      parts.push("-hwaccel qsv", "-hwaccel_output_format qsv");
+      break;
+    case "videotoolbox":
+      parts.push("-hwaccel videotoolbox");
+      break;
+    case "amf":
+      parts.push("-hwaccel d3d11va");
+      break;
+    // software: no hwaccel flags needed
   }
+
   parts.push(`-i ${inputFile}`, "-map 0:v");
 
   const enabledAudio = audioTracks.filter((t) => t.enabled);
@@ -487,15 +631,33 @@ function updateCommand() {
   const enabledSubs = subtitleTracks.filter((t) => t.enabled);
   enabledSubs.forEach((t) => parts.push(`-map 0:${t.index}`));
 
-  // Add video codec with appropriate settings
+  // Add video codec with appropriate settings based on encoder
   let videoCodecCmd = `-c:v ${videoCodec}`;
-  if (isNvenc) {
-    videoCodecCmd += ` -cq ${videoQuality} -preset ${videoPreset}`;
-    videoCodecCmd += " -rc:v vbr -b:v 0";
-  } else if (videoCodec === "vp9") {
-    videoCodecCmd += ` -crf ${videoQuality} -cpu-used ${videoPreset}`;
-  } else if (videoCodec === "av1") {
-    videoCodecCmd += ` -crf ${videoQuality} -cpu-used ${videoPreset}`;
+
+  switch (selectedEncoderFamily) {
+    case "nvenc":
+      videoCodecCmd += ` -cq ${videoQuality} -preset ${videoPreset}`;
+      videoCodecCmd += " -rc:v vbr -b:v 0";
+      break;
+    case "amf":
+      videoCodecCmd += ` -qp_i ${videoQuality} -qp_p ${videoQuality} -quality ${videoPreset}`;
+      break;
+    case "qsv":
+      videoCodecCmd += ` -global_quality ${videoQuality} -preset ${videoPreset}`;
+      break;
+    case "videotoolbox":
+      videoCodecCmd += ` -q:v ${videoQuality}`;
+      break;
+    case "software":
+    default:
+      // Software encoders (libx264, libx265, libvpx-vp9, etc.)
+      const codecBase = getCodecBase(videoCodec);
+      if (codecBase === "vp9" || codecBase === "av1") {
+        videoCodecCmd += ` -crf ${videoQuality} -cpu-used ${videoPreset}`;
+      } else {
+        videoCodecCmd += ` -crf ${videoQuality} -preset ${videoPreset}`;
+      }
+      break;
   }
   parts.push(videoCodecCmd);
 
@@ -547,6 +709,7 @@ async function startEncode() {
         videoQuality: videoQuality,
         videoPreset: videoPreset,
         outputFormat: outputFormat,
+        encoderFamily: selectedEncoderFamily,
       };
       await ipcRenderer.invoke(
         "encode-video",
@@ -803,13 +966,21 @@ function resetUI() {
   audioTracks = [];
   subtitleTracks = [];
   outputFormat = "mkv";
-  videoCodec = "hevc_nvenc";
+
+  // Reset to recommended encoder and its default codec
+  selectedEncoderFamily = availableEncoders.recommended || "software";
+  const defaultCodecsObj =
+    availableEncoders.encoders[selectedEncoderFamily] || {};
+  // Prefer HEVC, fall back to H264, then software default
+  videoCodec = defaultCodecsObj.hevc || defaultCodecsObj.h264 || "libx265";
   videoQuality = "22";
-  videoPreset = "p4";
+  videoPreset = selectedEncoderFamily === "nvenc" ? "p4" : "medium";
+
+  // Update selects
+  updateEncoderSelect();
+  updateCodecOptions();
+  updateQualityAndPresetOptions();
   outputFormatSelect.value = "mkv";
-  videoCodecSelect.value = "hevc_nvenc";
-  videoQualitySelect.value = "22";
-  videoPresetSelect.value = "p4";
 
   dropZone.classList.remove("hidden");
   settingsView.classList.add("hidden");
