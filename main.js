@@ -1,4 +1,10 @@
-const { app, BrowserWindow, ipcMain, powerSaveBlocker } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  powerSaveBlocker,
+  nativeImage,
+} = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
@@ -29,6 +35,21 @@ function getWindowIconPath() {
   ];
 
   return candidates.find((candidate) => fs.existsSync(candidate));
+}
+
+function getDockIconPaths() {
+  if (process.platform !== "darwin") {
+    return [];
+  }
+
+  const candidates = [
+    path.join(process.resourcesPath, "assets", "icon.icns"),
+    path.join(__dirname, "assets", "icon.icns"),
+    path.join(process.resourcesPath, "assets", "icon.png"),
+    path.join(__dirname, "assets", "icon.png"),
+  ];
+
+  return candidates.filter((candidate) => fs.existsSync(candidate));
 }
 
 function beginEncodePerformanceMode() {
@@ -284,6 +305,27 @@ function createWindow() {
 app.whenReady().then(() => {
   if (process.platform === "win32") {
     app.setAppUserModelId("com.recodr.app");
+  }
+
+  if (process.platform === "darwin") {
+    const dockIconPaths = getDockIconPaths();
+    if (app.dock && dockIconPaths.length > 0) {
+      let iconSet = false;
+      for (const dockIconPath of dockIconPaths) {
+        const dockIcon = nativeImage.createFromPath(dockIconPath);
+        if (!dockIcon.isEmpty()) {
+          app.dock.setIcon(dockIcon);
+          iconSet = true;
+          break;
+        }
+      }
+
+      if (!iconSet) {
+        console.warn(
+          `Unable to load Dock icon from paths: ${dockIconPaths.join(", ")}`
+        );
+      }
+    }
   }
 
   loadBinaryConfig();
