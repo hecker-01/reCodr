@@ -17,14 +17,14 @@
     "ffmpeg",
     "electron"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": "heckr.dev <jesse@heckr.dev>",
+  "license": "GPL-2.0-only",
   "devDependencies": {
     "electron": "^28.0.0",
     "electron-builder": "^24.9.1"
   },
   "build": {
-    "appId": "com.recodr.app",
+    "appId": "dev.heckr.recodr",
     "productName": "reCodr",
     "directories": {
       "buildResources": "assets",
@@ -54,6 +54,7 @@
     ],
     "win": {
       "target": [
+        "portable",
         "nsis"
       ],
       "icon": "assets/icon.ico",
