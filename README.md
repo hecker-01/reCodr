@@ -1,24 +1,33 @@
 # Video Re-Encoder GUI
 
-A desktop application for re-encoding video files using ffmpeg with HEVC (H.265) hardware acceleration.
+A desktop application for re-encoding video files using ffmpeg with hardware-accelerated encoding support.
 
 ## Features
 
-✨ **Drag & Drop Interface** - Simply drag video files into the window (supports MKV, MP4, AVI, MOV, and more)  
-📊 **Video Information** - Shows detailed metadata using ffprobe (resolution, codec, bitrate, duration)  
-⚙️ **Smart Encoding** - Uses HEVC NVENC for hardware-accelerated encoding  
-🔊 **Multi-Track Audio** - Select which audio tracks to include, with options to copy or re-encode to AAC/Opus/AC3  
-💬 **Multi-Track Subtitles** - Select subtitle tracks with options to copy or convert to SRT/ASS  
-📈 **Progress Tracking** - Real-time progress bar with percentage, ETA, FPS, and speed  
-💾 **File Comparison** - Shows size difference between original and encoded file
+- **Drag & Drop Interface** - Simply drag video files into the window (supports MKV, MP4, AVI, MOV, and more)
+- **Video Information** - Shows detailed metadata using ffprobe (resolution, codec, bitrate, duration)
+- **Multi-Encoder Support** - Automatic detection and selection of hardware encoders (NVIDIA NVENC, AMD AMF, Intel QSV, Apple VideoToolbox) with software fallback
+- **Hardware Acceleration** - Optimized encoding using available GPU acceleration
+- **Multi-Track Audio** - Select which audio tracks to include, with options to copy or re-encode to AAC/Opus/AC3
+- **Multi-Track Subtitles** - Select subtitle tracks with options to copy or convert to SRT/ASS
+- **Progress Tracking** - Real-time progress bar with percentage, ETA, FPS, and speed
+- **File Comparison** - Shows size difference between original and encoded file
+- **Codec Selection** - Choose between H.264 and HEVC (H.265) codecs
+- **Custom Binary Configuration** - Configure custom ffmpeg and ffprobe paths
 
 ## Encoding Settings
 
-The application uses optimized ffmpeg settings:
+The application automatically detects available encoders and uses optimized ffmpeg settings:
 
-- **Video Codec:** HEVC (H.265) with NVIDIA NVENC hardware acceleration
-- **Quality:** CQ 22 (high quality)
-- **Preset:** P4 (medium speed, good quality/speed balance)
+- **Video Codec:** H.264 or HEVC (H.265)
+- **Encoders Supported:**
+  - **NVIDIA NVENC** - HEVC and H.264 acceleration
+  - **AMD AMF** - HEVC and H.264 acceleration
+  - **Intel QSV** - HEVC and H.264 acceleration
+  - **Apple VideoToolbox** - HEVC and H.264 acceleration (macOS)
+  - **Software Fallback** - libx264 (H.264) and libx265 (HEVC)
+- **Quality:** Configurable (CQ 22 default for hardware encoders)
+- **Preset:** Configurable speed/quality tradeoff
 - **Audio Options:** Copy, AAC (192k), Opus (128k), AC3 (384k)
 - **Subtitle Options:** Copy, SRT, ASS, MOV Text
 
@@ -44,14 +53,18 @@ The application uses optimized ffmpeg settings:
 
 ## Requirements
 
-### ffmpeg with NVENC Support
+### ffmpeg and ffprobe
 
-You need ffmpeg installed with NVIDIA NVENC support.
-The app resolves binaries from your system installation (`ffmpeg` / `ffprobe` on PATH), or from `FFMPEG_PATH` and `FFPROBE_PATH` if you set them.
+The application requires ffmpeg and ffprobe to be installed and available in your system PATH, or you can configure custom paths via the **Binary Paths** menu.
 
-**Option 1: Install pre-built ffmpeg**
+**Option 1: Install pre-built ffmpeg (recommended)**
 
 - Download from: https://github.com/BtbN/FFmpeg-Builds/releases
+- For best hardware acceleration support, ensure your ffmpeg build includes:
+  - NVIDIA NVENC support (for NVIDIA GPUs)
+  - AMD AMF support (for AMD GPUs)
+  - Intel QSV support (for Intel GPUs)
+  - Apple VideoToolbox support (for macOS)
 - Extract and add to your PATH
 
 **Option 2: Using Chocolatey (Windows)**
@@ -60,10 +73,21 @@ The app resolves binaries from your system installation (`ffmpeg` / `ffprobe` on
 choco install ffmpeg
 ```
 
-### NVIDIA GPU
+**Option 3: Using Homebrew (macOS)**
 
-- Requires an NVIDIA GPU with NVENC support (most modern NVIDIA cards)
-- Install latest NVIDIA drivers
+```bash
+brew install ffmpeg
+```
+
+### Hardware Support
+
+The application will work with the following hardware (in order of priority):
+
+- **NVIDIA GPUs** - Requires NVIDIA driver with NVENC support (most modern NVIDIA cards)
+- **AMD GPUs** - Requires AMD driver with AMF support
+- **Intel GPUs** - Requires Intel driver with QSV support
+- **Apple Silicon/Intel Macs** - VideoToolbox support (built into macOS)
+- **Software Fallback** - Will automatically fall back to software encoding (slower) if no hardware acceleration is available
 
 ## Installation
 
@@ -90,10 +114,12 @@ npm run dev
 1. **Launch the app** - Run `npm start`
 2. **Configure binaries (optional)** - Click **Binary Paths** in the header, set custom `ffmpeg` / `ffprobe` executable paths, and use **Check Paths** to verify both tools
 3. **Add video** - Drag and drop a video file into the window (or click to browse)
-4. **Review info** - Check the video details and encoding settings
-5. **Start encoding** - Click "🚀 Start Encoding" button
-6. **Monitor progress** - Watch real-time progress with ETA and speed
-7. **Done!** - Encoded file is saved as `[filename]_encoded.mkv` in the same directory
+4. **Review info** - Check the video details and detected encoders
+5. **Configure encoding** - Select your preferred encoder, codec (H.264 or HEVC), quality, and preset
+6. **Select tracks** - Choose which audio and subtitle tracks to include and how to encode them
+7. **Start encoding** - Click the **Start Encoding** button
+8. **Monitor progress** - Watch real-time progress with ETA and speed
+9. **Done!** - Encoded file is saved as `[filename]_encoded.mkv` in the same directory
 
 ## Supported Formats
 
@@ -105,23 +131,33 @@ Output is always saved as MKV to preserve all streams (video, audio, subtitles).
 
 ## Troubleshooting
 
-### "ffmpeg not found" error
+### "ffmpeg not found" or "ffprobe not found" error
 
-Make sure ffmpeg is installed and in your system PATH. Test by running:
+1. Make sure ffmpeg and ffprobe are installed and in your system PATH
+2. Test by running:
+   ```bash
+   ffmpeg -version
+   ffprobe -version
+   ```
+3. If not installed, download from: https://github.com/BtbN/FFmpeg-Builds/releases
+4. Alternatively, use the **Binary Paths** menu to set custom paths to your ffmpeg and ffprobe binaries
 
-```bash
-ffmpeg -version
-```
+### No hardware encoders detected
 
-### "hevc_nvenc not found" error
+The application will display a warning if no hardware encoders are found and will fall back to software encoding.
 
-Your ffmpeg build doesn't have NVENC support. Download a build with NVENC or install NVIDIA drivers.
+To fix this:
+- **NVIDIA Users:** Ensure you have the latest NVIDIA drivers installed
+- **AMD Users:** Ensure you have AMD drivers installed and your ffmpeg build includes AMF support
+- **Intel Users:** Ensure Intel GPU drivers are installed and your ffmpeg build includes QSV support
+- **macOS Users:** VideoToolbox is built-in; ensure you're using a compatible ffmpeg build
 
 ### Encoding is slow
 
-- NVENC requires an NVIDIA GPU with proper drivers
-- If you don't have NVIDIA GPU, modify `main.js` to use software encoding:
-  Change `-c:v hevc_nvenc` to `-c:v libx265`
+- If using software encoding (no hardware accelerators available), this is normal
+- Ensure you have the correct hardware drivers installed for your GPU
+- Use the **Binary Paths** menu to verify ffmpeg is the correct build with hardware acceleration support
+- Try adjusting the quality and preset settings for faster encoding
 
 ## Project Structure
 
