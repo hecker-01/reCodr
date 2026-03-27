@@ -7,6 +7,7 @@ let currentFile = null;
 let metadata = null;
 let audioTracks = [];
 let subtitleTracks = [];
+let attachmentTracks = [];
 let outputFormat = "mkv";
 let videoCodec = "libx265";
 let videoQuality = "22";
@@ -30,8 +31,10 @@ const completionView = document.getElementById("completionView");
 const fileInfo = document.getElementById("fileInfo");
 const audioSection = document.getElementById("audioSection");
 const subtitleSection = document.getElementById("subtitleSection");
+const attachmentSection = document.getElementById("attachmentSection");
 const audioTracksEl = document.getElementById("audioTracks");
 const subtitleTracksEl = document.getElementById("subtitleTracks");
+const attachmentTracksEl = document.getElementById("attachmentTracks");
 const commandPreview = document.getElementById("commandPreview");
 const encodeBtn = document.getElementById("encodeBtn");
 const changeFileBtn = document.getElementById("changeFileBtn");
@@ -73,7 +76,7 @@ fileInput.addEventListener("change", (e) => {
     processFile(e.target.files[0].path);
   }
 });
-changeFileBtn.addEventListener("click", resetUI);
+changeFileBtn.addEventListener("click", () => location.reload());
 encodeAnotherBtn.addEventListener("click", () => location.reload());
 openBinaryConfigBtn.addEventListener("click", openBinaryConfig);
 closeBinaryConfigBtn.addEventListener("click", closeBinaryConfig);
@@ -186,6 +189,7 @@ async function processFile(filePath) {
     displayFileInfo();
     displayAudioTracks();
     displaySubtitleTracks();
+    displayAttachmentTracks();
     updateQualityAndPresetOptions();
     updateCommand();
 
@@ -258,6 +262,20 @@ function formatTrackSizeLabel(sizeMb) {
   return `${sizeMb.toFixed(2)} MB`;
 }
 
+function formatAttachmentSize(sizeBytes) {
+  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
+    return "Unknown size";
+  }
+
+  if (sizeBytes >= 1024 * 1024) {
+    return `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
+  } else if (sizeBytes >= 1024) {
+    return `${(sizeBytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${sizeBytes} bytes`;
+}
+
 // Display audio tracks
 function displayAudioTracks() {
   const streams = metadata.streams.filter((s) => s.codec_type === "audio");
@@ -270,18 +288,29 @@ function displayAudioTracks() {
   }
 
   audioSection.classList.remove("hidden");
-  audioTracks = streams.map((s) => ({
-    index: s.index,
-    enabled: true,
-    action: "copy",
-    title: s.tags?.title || "",
-    language: (s.tags?.language || "und").toUpperCase(),
-    codec: s.codec_name?.toUpperCase() || "Unknown",
-    channels: s.channels || "?",
-    currentSizeLabel: formatTrackSizeLabel(
-      estimateTrackSizeMb(s, durationSeconds),
-    ),
-  }));
+  audioTracks = streams.map((s) => {
+    // Set default action based on codec
+    let defaultAction = "copy";
+    const codec = s.codec_name?.toLowerCase();
+
+    // Default to AAC if not already AAC
+    if (codec && codec !== "aac") {
+      defaultAction = "aac";
+    }
+
+    return {
+      index: s.index,
+      enabled: true,
+      action: defaultAction,
+      title: s.tags?.title || "",
+      language: (s.tags?.language || "und").toUpperCase(),
+      codec: s.codec_name?.toUpperCase() || "Unknown",
+      channels: s.channels || "?",
+      currentSizeLabel: formatTrackSizeLabel(
+        estimateTrackSizeMb(s, durationSeconds),
+      ),
+    };
+  });
 
   renderAudioTracks();
 }
@@ -331,10 +360,20 @@ function displaySubtitleTracks() {
       "dvdsub",
       "pgssub",
     ].includes(s.codec_name?.toLowerCase());
+
+    // Set default action based on codec and type
+    let defaultAction = "copy";
+    const codec = s.codec_name?.toLowerCase();
+
+    // Default to ASS for text-based subtitles (not image-based)
+    if (!isImage && codec && codec !== "ass" && codec !== "ssa") {
+      defaultAction = "ass";
+    }
+
     return {
       index: s.index,
       enabled: true,
-      action: "copy",
+      action: defaultAction,
       title: s.tags?.title || "",
       language: (s.tags?.language || "und").toUpperCase(),
       codec: s.codec_name?.toUpperCase() || "Unknown",
@@ -395,6 +434,99 @@ window.toggleSubtitle = (idx, enabled) => {
 
 window.setSubtitleAction = (idx, action) => {
   subtitleTracks[idx].action = action;
+  updateCommand();
+};
+
+// Display attachment tracks (fonts)
+function displayAttachmentTracks() {
+  const streams = metadata.streams.filter((s) => s.codec_type === "attachment");
+
+  if (streams.length === 0) {
+    attachmentSection.classList.add("hidden");
+    attachmentTracks = [];
+    return;
+  }
+
+  attachmentSection.classList.remove("hidden");
+  attachmentTracks = streams.map((s) => {
+    const filename = s.tags?.filename || `Attachment ${s.index}`;
+    const mimetype = s.tags?.mimetype || s.codec_name || "unknown";
+    const isFont =
+      /font|ttf|otf|woff/i.test(mimetype) ||
+      /\.(ttf|otf|woff|woff2)$/i.test(filename);
+
+    // Try multiple possible size fields from various container formats
+    let sizeBytes = 0;
+
+    // Common ffprobe attachment size fields
+    const sizeFields = [
+      s.extradata_size, // This is where attachment data size is stored
+      s.tags?.NUMBER_OF_BYTES,
+      s.tags?.BYTES,
+      s.tags?.SIZE,
+      s.tags?.size,
+      s.tags?.["NUMBER OF BYTES"],
+      s.tags?.["File size"],
+      s.tags?.filesize,
+      s.tags?.DATA_SIZE,
+      s.size,
+      s.data_size,
+      s.stream_size,
+    ];
+
+    for (const field of sizeFields) {
+      if (field && !isNaN(parseFloat(field))) {
+        sizeBytes = parseFloat(field);
+        break;
+      }
+    }
+
+    // If no size found, try to estimate based on typical font sizes
+    let sizeLabel;
+    if (sizeBytes > 0) {
+      sizeLabel = formatAttachmentSize(sizeBytes);
+    } else if (isFont) {
+      sizeLabel = "~50-500 KB (estimated)";
+    } else {
+      sizeLabel = "Size unavailable";
+    }
+
+    return {
+      index: s.index,
+      enabled: true,
+      filename,
+      mimetype,
+      isFont,
+      sizeLabel,
+    };
+  });
+
+  renderAttachmentTracks();
+}
+
+function renderAttachmentTracks() {
+  const enabled = attachmentTracks.filter((t) => t.enabled).length;
+  document.getElementById("attachmentCount").textContent =
+    `${enabled}/${attachmentTracks.length}`;
+
+  attachmentTracksEl.innerHTML = attachmentTracks
+    .map(
+      (t, idx) => `
+    <div class="track-item">
+      <input type="checkbox" ${t.enabled ? "checked" : ""} onchange="toggleAttachment(${idx}, this.checked)">
+      <div class="track-info">
+        <span class="track-name">${t.filename}</span>
+        <span class="track-meta">${t.isFont ? "Font" : "File"} · ${t.mimetype} · ${t.sizeLabel}</span>
+      </div>
+    </div>
+  `,
+    )
+    .join("");
+}
+
+window.toggleAttachment = (idx, enabled) => {
+  attachmentTracks[idx].enabled = enabled;
+  renderAttachmentTracks();
   updateCommand();
 };
 
@@ -631,6 +763,9 @@ function updateCommand() {
   const enabledSubs = subtitleTracks.filter((t) => t.enabled);
   enabledSubs.forEach((t) => parts.push(`-map 0:${t.index}`));
 
+  const enabledAttachments = attachmentTracks.filter((t) => t.enabled);
+  enabledAttachments.forEach((t) => parts.push(`-map 0:${t.index}`));
+
   // Add video codec with appropriate settings based on encoder
   let videoCodecCmd = `-c:v ${videoCodec}`;
 
@@ -673,6 +808,11 @@ function updateCommand() {
     parts.push(`-c:s:${idx} ${t.action}`);
   });
 
+  // Copy attachments (fonts)
+  if (enabledAttachments.length > 0) {
+    parts.push("-c:t copy");
+  }
+
   // Add output format specific options
   if (outputFormat === "mp4") {
     parts.push("-movflags +faststart");
@@ -705,6 +845,7 @@ async function startEncode() {
       const options = {
         audioTracks: audioTracks.filter((t) => t.enabled),
         subtitleTracks: subtitleTracks.filter((t) => t.enabled),
+        attachmentTracks: attachmentTracks.filter((t) => t.enabled),
         videoCodec: videoCodec,
         videoQuality: videoQuality,
         videoPreset: videoPreset,
@@ -956,7 +1097,11 @@ function openBinaryConfig() {
 }
 
 function closeBinaryConfig() {
-  showOnlyView(viewBeforeBinaryConfig);
+  if (viewBeforeBinaryConfig === "drop") {
+    location.reload();
+  } else {
+    showOnlyView(viewBeforeBinaryConfig);
+  }
 }
 
 // Reset UI
@@ -965,6 +1110,7 @@ function resetUI() {
   metadata = null;
   audioTracks = [];
   subtitleTracks = [];
+  attachmentTracks = [];
   outputFormat = "mkv";
 
   // Reset to recommended encoder and its default codec

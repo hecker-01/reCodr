@@ -36,7 +36,6 @@ This is a standard Electron two-process architecture:
   - Binary path resolution (system PATH or user-configured paths)
   - Hardware encoder detection
   - Power management (prevents sleep during encoding)
-  
 - **Renderer Process** (`renderer.js`) - Handles:
   - UI state management and DOM manipulation
   - File selection (drag-and-drop + file picker)
@@ -48,15 +47,15 @@ This is a standard Electron two-process architecture:
 
 All main↔renderer communication uses `ipcMain.handle()` / `ipcRenderer.invoke()`:
 
-| Handler | Purpose |
-|---------|---------|
-| `detect-encoders` | Scans ffmpeg for available hardware encoders |
-| `get-video-info` | Uses ffprobe to extract video metadata |
-| `encode-video` | Starts encoding with specified options |
-| `encode-custom` | Starts encoding with user-modified ffmpeg command |
-| `get-binary-config` | Retrieves custom ffmpeg/ffprobe paths |
-| `save-binary-config` | Saves custom binary paths to config |
-| `verify-binary-config` | Tests if binary paths are valid |
+| Handler                | Purpose                                           |
+| ---------------------- | ------------------------------------------------- |
+| `detect-encoders`      | Scans ffmpeg for available hardware encoders      |
+| `get-video-info`       | Uses ffprobe to extract video metadata            |
+| `encode-video`         | Starts encoding with specified options            |
+| `encode-custom`        | Starts encoding with user-modified ffmpeg command |
+| `get-binary-config`    | Retrieves custom ffmpeg/ffprobe paths             |
+| `save-binary-config`   | Saves custom binary paths to config               |
+| `verify-binary-config` | Tests if binary paths are valid                   |
 
 Progress updates during encoding are sent via `event.sender.send('encode-progress', ...)`.
 
@@ -70,16 +69,18 @@ const encoderFamilies = {
   amf: { hevc: "hevc_amf", h264: "h264_amf" },
   qsv: { hevc: "hevc_qsv", h264: "h264_qsv" },
   videotoolbox: { hevc: "hevc_videotoolbox", h264: "h264_videotoolbox" },
-  software: { hevc: "libx265", h264: "libx264" }
+  software: { hevc: "libx265", h264: "libx264" },
 };
 ```
 
 **Key functions:**
+
 - `getEncoderFamily(codec)` - Maps a codec string to its family (e.g., `"hevc_nvenc"` → `"nvenc"`)
 - `applyVideoEncodingArgs(args, codec, quality, preset)` - Adds encoder-specific flags based on family
 - `applyHwaccelArgs(args, codec)` - Adds hardware acceleration flags when needed
 
 **Important:** Each encoder family has different parameter requirements:
+
 - **NVENC**: Uses `-cq` (constant quality) and `-preset p1-p7`
 - **AMF**: Uses `-qp_i` / `-qp_p` and maps presets to `speed`/`balanced`/`quality`
 - **QSV**: Uses `-global_quality` and standard preset names
@@ -88,9 +89,10 @@ const encoderFamilies = {
 
 ## Encoder Detection Logic
 
-On startup, the app runs `ffmpeg -encoders` and parses output to detect available hardware encoders. 
+On startup, the app runs `ffmpeg -encoders` and parses output to detect available hardware encoders.
 
 **Critical behavior:** An encoder family is included if **at least one** codec (H.264 or HEVC) is available. This is important because:
+
 - Intel Macs may only have `h264_videotoolbox` (not `hevc_videotoolbox`)
 - Older Intel GPUs may only support H.264 via QSV
 - Some AMD cards may have limited HEVC support
@@ -121,11 +123,17 @@ Audio and subtitle tracks are represented as arrays of objects:
 ```javascript
 audioTracks = [
   { index: 0, codec: "aac", channels: 2, selected: true, encoding: "copy" },
-  { index: 1, codec: "ac3", channels: 6, selected: true, encoding: "aac" }
+  { index: 1, codec: "ac3", channels: 6, selected: true, encoding: "aac" },
 ];
 
 subtitleTracks = [
-  { index: 0, codec: "subrip", language: "eng", selected: true, encoding: "copy" }
+  {
+    index: 0,
+    codec: "subrip",
+    language: "eng",
+    selected: true,
+    encoding: "copy",
+  },
 ];
 ```
 
@@ -168,15 +176,18 @@ When users manually edit the ffmpeg command preview, `commandModified` is set to
 ## Platform-Specific Considerations
 
 ### macOS
+
 - Uses `.icns` icon format
 - Dock icon is explicitly hidden/shown via `app.dock.show()`
 - VideoToolbox hardware encoding available (with codec limitations on Intel)
 
 ### Windows
-- Uses `.ico` icon format  
+
+- Uses `.ico` icon format
 - NVENC/AMD AMF/QSV support depending on hardware
 - Binary paths often require custom configuration
 
 ### Linux
+
 - Uses `.png` icon format
 - VAAPI support not currently implemented (use software encoding)

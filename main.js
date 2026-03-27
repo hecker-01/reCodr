@@ -169,7 +169,19 @@ function mapSoftwarePreset(preset) {
   const p = String(preset).toLowerCase();
   if (p === "fast" || p === "p1" || p === "p2") return "veryfast";
   if (p === "slow" || p === "p6" || p === "p7") return "veryslow";
-  if (["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"].includes(p)) {
+  if (
+    [
+      "ultrafast",
+      "superfast",
+      "veryfast",
+      "faster",
+      "fast",
+      "medium",
+      "slow",
+      "slower",
+      "veryslow",
+    ].includes(p)
+  ) {
     return p;
   }
   return "medium";
@@ -625,6 +637,12 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
       args.push("-map", `0:${t.index}`);
     });
 
+    // Map enabled attachment tracks (fonts)
+    const attachmentTracks = options.attachmentTracks || [];
+    attachmentTracks.forEach((t) => {
+      args.push("-map", `0:${t.index}`);
+    });
+
     // Apply selected video codec settings
     applyVideoEncodingArgs(args, videoCodec, videoQuality, videoPreset);
 
@@ -656,6 +674,11 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
         args.push(`-c:s:${idx}`, "mov_text");
       }
     });
+
+    // Copy attachments (fonts)
+    if (attachmentTracks.length > 0) {
+      args.push("-c:t", "copy");
+    }
 
     // If no tracks specified, fall back to copy all
     if (audioTracks.length === 0 && subtitleTracks.length === 0) {

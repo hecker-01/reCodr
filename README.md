@@ -147,6 +147,7 @@ Output is always saved as MKV to preserve all streams (video, audio, subtitles).
 The application will display a warning if no hardware encoders are found and will fall back to software encoding.
 
 To fix this:
+
 - **NVIDIA Users:** Ensure you have the latest NVIDIA drivers installed
 - **AMD Users:** Ensure you have AMD drivers installed and your ffmpeg build includes AMF support
 - **Intel Users:** Ensure Intel GPU drivers are installed and your ffmpeg build includes QSV support
