@@ -705,19 +705,29 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
 
     let totalDuration = 0;
     let startTime = Date.now();
+    let stderrBuffer = "";
 
     ffmpegProcess.stderr.on("data", (data) => {
-      const stderr = data.toString();
-      console.log("FFmpeg stderr:", stderr);
+      const chunk = data.toString();
+      console.log("FFmpeg stderr:", chunk);
 
-      // Parse duration from ffmpeg output
-      const durationMatch = stderr.match(/Duration: (\d+):(\d+):(\d+\.\d+)/);
-      if (durationMatch && totalDuration === 0) {
-        const hours = parseInt(durationMatch[1]);
-        const minutes = parseInt(durationMatch[2]);
-        const seconds = parseFloat(durationMatch[3]);
-        totalDuration = hours * 3600 + minutes * 60 + seconds;
-        console.log("Total duration:", totalDuration, "seconds");
+      // Accumulate stderr across chunks so the Duration line is found even
+      // when it is split across Node.js data-event boundaries.  This can
+      // happen with files that have many attachment streams (embedded fonts),
+      // which generate a large block of stream-info output before encoding.
+      if (totalDuration === 0) {
+        stderrBuffer += chunk;
+        const durationMatch = stderrBuffer.match(
+          /Duration: (\d+):(\d+):(\d+\.\d+)/
+        );
+        if (durationMatch) {
+          const hours = parseInt(durationMatch[1]);
+          const minutes = parseInt(durationMatch[2]);
+          const seconds = parseFloat(durationMatch[3]);
+          totalDuration = hours * 3600 + minutes * 60 + seconds;
+          console.log("Total duration:", totalDuration, "seconds");
+          stderrBuffer = ""; // free memory once duration is captured
+        }
       }
     });
 
@@ -831,19 +841,29 @@ ipcMain.handle("encode-custom", (event, commandString) => {
     });
 
     let totalDuration = 0;
+    let stderrBuffer = "";
 
     ffmpegProcess.stderr.on("data", (data) => {
-      const stderr = data.toString();
-      console.log("FFmpeg stderr:", stderr);
+      const chunk = data.toString();
+      console.log("FFmpeg stderr:", chunk);
 
-      // Parse duration from ffmpeg output
-      const durationMatch = stderr.match(/Duration: (\d+):(\d+):(\d+\.\d+)/);
-      if (durationMatch && totalDuration === 0) {
-        const hours = parseInt(durationMatch[1]);
-        const minutes = parseInt(durationMatch[2]);
-        const seconds = parseFloat(durationMatch[3]);
-        totalDuration = hours * 3600 + minutes * 60 + seconds;
-        console.log("Total duration:", totalDuration, "seconds");
+      // Accumulate stderr across chunks so the Duration line is found even
+      // when it is split across Node.js data-event boundaries.  This can
+      // happen with files that have many attachment streams (embedded fonts),
+      // which generate a large block of stream-info output before encoding.
+      if (totalDuration === 0) {
+        stderrBuffer += chunk;
+        const durationMatch = stderrBuffer.match(
+          /Duration: (\d+):(\d+):(\d+\.\d+)/
+        );
+        if (durationMatch) {
+          const hours = parseInt(durationMatch[1]);
+          const minutes = parseInt(durationMatch[2]);
+          const seconds = parseFloat(durationMatch[3]);
+          totalDuration = hours * 3600 + minutes * 60 + seconds;
+          console.log("Total duration:", totalDuration, "seconds");
+          stderrBuffer = ""; // free memory once duration is captured
+        }
       }
     });
 
