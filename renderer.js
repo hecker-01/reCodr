@@ -262,6 +262,48 @@ function formatTrackSizeLabel(sizeMb) {
   return `${sizeMb.toFixed(2)} MB`;
 }
 
+function parseFrameRate(rate) {
+  if (!rate || typeof rate !== "string") return 0;
+  const parts = rate.split("/");
+  if (parts.length !== 2) return 0;
+  const numerator = parseFloat(parts[0]);
+  const denominator = parseFloat(parts[1]);
+  if (
+    !Number.isFinite(numerator) ||
+    !Number.isFinite(denominator) ||
+    denominator <= 0
+  ) {
+    return 0;
+  }
+  return numerator / denominator;
+}
+
+function estimateTotalVideoFrames(videoMetadata) {
+  const videoStream = videoMetadata?.streams?.find((s) => s.codec_type === "video");
+  if (!videoStream) return 0;
+
+  const nbFrames = parseInt(videoStream.nb_frames || "", 10);
+  if (Number.isFinite(nbFrames) && nbFrames > 0) {
+    return nbFrames;
+  }
+
+  const durationSeconds = parseFloat(
+    videoMetadata?.format?.duration || videoStream.duration || "0"
+  );
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return 0;
+  }
+
+  const avgFps = parseFrameRate(videoStream.avg_frame_rate);
+  const fallbackFps = parseFrameRate(videoStream.r_frame_rate);
+  const fps = avgFps > 0 ? avgFps : fallbackFps;
+  if (!Number.isFinite(fps) || fps <= 0) {
+    return 0;
+  }
+
+  return Math.round(durationSeconds * fps);
+}
+
 function formatAttachmentSize(sizeBytes) {
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
     return "Unknown size";
@@ -851,6 +893,7 @@ async function startEncode() {
         videoPreset: videoPreset,
         outputFormat: outputFormat,
         encoderFamily: selectedEncoderFamily,
+        totalFrames: estimateTotalVideoFrames(metadata),
       };
       await ipcRenderer.invoke(
         "encode-video",

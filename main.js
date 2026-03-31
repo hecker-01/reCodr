@@ -128,6 +128,12 @@ function parseKbitsPerSecond(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function parseNonNegativeInt(value) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return parsed;
+}
+
 function isNvencCodec(codec) {
   return codec === "hevc_nvenc" || codec === "h264_nvenc";
 }
@@ -617,6 +623,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
     const encoderFamily = getEncoderFamily(videoCodec);
     const videoPreset =
       options.videoPreset || (encoderFamily === "nvenc" ? "p4" : "medium");
+    const totalFrames = parseNonNegativeInt(options.totalFrames);
 
     const args = [];
     applyHwaccelArgs(args, videoCodec);
@@ -705,19 +712,29 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
 
     let totalDuration = 0;
     let startTime = Date.now();
+    let stderrBuffer = "";
 
     ffmpegProcess.stderr.on("data", (data) => {
-      const stderr = data.toString();
-      console.log("FFmpeg stderr:", stderr);
+      const chunk = data.toString();
+      console.log("FFmpeg stderr:", chunk);
 
-      // Parse duration from ffmpeg output
-      const durationMatch = stderr.match(/Duration: (\d+):(\d+):(\d+\.\d+)/);
-      if (durationMatch && totalDuration === 0) {
-        const hours = parseInt(durationMatch[1]);
-        const minutes = parseInt(durationMatch[2]);
-        const seconds = parseFloat(durationMatch[3]);
-        totalDuration = hours * 3600 + minutes * 60 + seconds;
-        console.log("Total duration:", totalDuration, "seconds");
+      // Accumulate stderr across chunks so the Duration line is found even
+      // when it is split across Node.js data-event boundaries.  This can
+      // happen with files that have many attachment streams (embedded fonts),
+      // which generate a large block of stream-info output before encoding.
+      if (totalDuration === 0) {
+        stderrBuffer += chunk;
+        const durationMatch = stderrBuffer.match(
+          /Duration: (\d+):(\d+):(\d+\.\d+)/
+        );
+        if (durationMatch) {
+          const hours = parseInt(durationMatch[1]);
+          const minutes = parseInt(durationMatch[2]);
+          const seconds = parseFloat(durationMatch[3]);
+          totalDuration = hours * 3600 + minutes * 60 + seconds;
+          console.log("Total duration:", totalDuration, "seconds");
+          stderrBuffer = ""; // free memory once duration is captured
+        }
       }
     });
 
@@ -726,6 +743,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
       fps: 0,
       kbps: 0,
       speed: 0,
+      frame: 0,
     };
 
     ffmpegProcess.stdout.on("data", (data) => {
@@ -751,6 +769,24 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
         if (line.startsWith("speed=")) {
           const value = parseFloat(line.split("=")[1]);
           if (Number.isFinite(value)) progressStats.speed = value;
+          continue;
+        }
+
+        if (line.startsWith("frame=")) {
+          progressStats.frame = parseNonNegativeInt(line.split("=")[1]);
+          if (totalFrames > 0 && progressStats.frame > 0) {
+            // Keep <100 during active encode; close handler emits final 100%.
+            const percent = Math.min(
+              99,
+              (progressStats.frame / totalFrames) * 100
+            );
+            event.sender.send("encode-progress", {
+              percent,
+              currentFps: progressStats.fps,
+              currentKbps: progressStats.kbps,
+              currentSpeed: progressStats.speed,
+            });
+          }
           continue;
         }
 
@@ -831,19 +867,29 @@ ipcMain.handle("encode-custom", (event, commandString) => {
     });
 
     let totalDuration = 0;
+    let stderrBuffer = "";
 
     ffmpegProcess.stderr.on("data", (data) => {
-      const stderr = data.toString();
-      console.log("FFmpeg stderr:", stderr);
+      const chunk = data.toString();
+      console.log("FFmpeg stderr:", chunk);
 
-      // Parse duration from ffmpeg output
-      const durationMatch = stderr.match(/Duration: (\d+):(\d+):(\d+\.\d+)/);
-      if (durationMatch && totalDuration === 0) {
-        const hours = parseInt(durationMatch[1]);
-        const minutes = parseInt(durationMatch[2]);
-        const seconds = parseFloat(durationMatch[3]);
-        totalDuration = hours * 3600 + minutes * 60 + seconds;
-        console.log("Total duration:", totalDuration, "seconds");
+      // Accumulate stderr across chunks so the Duration line is found even
+      // when it is split across Node.js data-event boundaries.  This can
+      // happen with files that have many attachment streams (embedded fonts),
+      // which generate a large block of stream-info output before encoding.
+      if (totalDuration === 0) {
+        stderrBuffer += chunk;
+        const durationMatch = stderrBuffer.match(
+          /Duration: (\d+):(\d+):(\d+\.\d+)/
+        );
+        if (durationMatch) {
+          const hours = parseInt(durationMatch[1]);
+          const minutes = parseInt(durationMatch[2]);
+          const seconds = parseFloat(durationMatch[3]);
+          totalDuration = hours * 3600 + minutes * 60 + seconds;
+          console.log("Total duration:", totalDuration, "seconds");
+          stderrBuffer = ""; // free memory once duration is captured
+        }
       }
     });
 
