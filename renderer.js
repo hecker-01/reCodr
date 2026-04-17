@@ -283,7 +283,9 @@ function parseFrameRate(rate) {
 }
 
 function estimateTotalVideoFrames(videoMetadata) {
-  const videoStream = videoMetadata?.streams?.find((s) => s.codec_type === "video");
+  const videoStream = videoMetadata?.streams?.find(
+    (s) => s.codec_type === "video",
+  );
   if (!videoStream) return 0;
 
   const nbFrames = parseInt(videoStream.nb_frames || "", 10);
@@ -292,7 +294,7 @@ function estimateTotalVideoFrames(videoMetadata) {
   }
 
   const durationSeconds = parseFloat(
-    videoMetadata?.format?.duration || videoStream.duration || "0"
+    videoMetadata?.format?.duration || videoStream.duration || "0",
   );
   if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
     return 0;
@@ -345,7 +347,8 @@ function displayAudioTracks() {
     }
 
     const language = (s.tags?.language || "und").toUpperCase();
-    const enabled = preferredAudioLangs.length === 0 ||
+    const enabled =
+      preferredAudioLangs.length === 0 ||
       preferredAudioLangs.includes(language.toLowerCase());
 
     return {
@@ -421,7 +424,8 @@ function displaySubtitleTracks() {
     }
 
     const language = (s.tags?.language || "und").toUpperCase();
-    const enabled = preferredSubLangs.length === 0 ||
+    const enabled =
+      preferredSubLangs.length === 0 ||
       preferredSubLangs.includes(language.toLowerCase());
 
     return {
@@ -852,10 +856,14 @@ function updateCommand() {
 
   enabledAudio.forEach((t, idx) => {
     if (t.action === "copy") parts.push(`-c:a:${idx} copy`);
-    else if (t.action === "aac") parts.push(`-c:a:${idx} aac -b:a:${idx} 192k`);
-    else if (t.action === "opus")
+    else if (t.action === "aac") {
+      parts.push(`-c:a:${idx} aac -b:a:${idx} 192k`);
+      if (t.channels > 2) parts.push(`-ac:a:${idx} 2`);
+    } else if (t.action === "opus") {
       parts.push(`-c:a:${idx} libopus -b:a:${idx} 128k`);
-    else if (t.action === "ac3") parts.push(`-c:a:${idx} ac3 -b:a:${idx} 384k`);
+      if (t.channels > 2) parts.push(`-ac:a:${idx} 2`);
+    } else if (t.action === "ac3")
+      parts.push(`-c:a:${idx} ac3 -b:a:${idx} 384k`);
   });
 
   enabledSubs.forEach((t, idx) => {

@@ -697,9 +697,15 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
       } else if (t.action === "aac") {
         args.push(`-c:a:${idx}`, "aac");
         args.push(`-b:a:${idx}`, "192k");
+        if (t.channels > 2) {
+          args.push(`-ac:a:${idx}`, "2");
+        }
       } else if (t.action === "opus") {
         args.push(`-c:a:${idx}`, "libopus");
         args.push(`-b:a:${idx}`, "128k");
+        if (t.channels > 2) {
+          args.push(`-ac:a:${idx}`, "2");
+        }
       } else if (t.action === "ac3") {
         args.push(`-c:a:${idx}`, "ac3");
         args.push(`-b:a:${idx}`, "384k");
