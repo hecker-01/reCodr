@@ -104,6 +104,9 @@ ffmpegPathInput.addEventListener("input", scheduleSettingsSave);
 ffprobePathInput.addEventListener("input", scheduleSettingsSave);
 debugModeToggle.addEventListener("change", () => {
   debugMode = debugModeToggle.checked;
+  if (!progressView.classList.contains("hidden")) {
+    debugLogSection.classList.toggle("hidden", !debugMode);
+  }
   scheduleSettingsSave();
 });
 clearDebugLogBtn.addEventListener("click", () => {
@@ -928,11 +931,7 @@ async function startEncode() {
 
   // Show/hide debug log
   debugLog.textContent = "";
-  if (debugMode) {
-    debugLogSection.classList.remove("hidden");
-  } else {
-    debugLogSection.classList.add("hidden");
-  }
+  debugLogSection.classList.toggle("hidden", !debugMode);
 
   console.log("Starting encode for:", currentFile);
 
@@ -1030,10 +1029,10 @@ ipcRenderer.on("encode-progress", (event, progress) => {
 
 // Debug stderr handler
 ipcRenderer.on("encode-stderr", (event, text) => {
-  if (!debugMode) return;
   debugLog.textContent += text;
-  // Auto-scroll to bottom
-  debugLog.scrollTop = debugLog.scrollHeight;
+  if (debugMode) {
+    debugLog.scrollTop = debugLog.scrollHeight;
+  }
 });
 
 // Show completion
