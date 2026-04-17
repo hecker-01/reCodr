@@ -17,7 +17,6 @@ let commandModified = false;
 let preferredAudioLangs = [];
 let preferredSubLangs = [];
 let debugMode = false;
-let tips = [];
 let tipInterval = null;
 let availableEncoders = {
   available: [],
@@ -64,14 +63,25 @@ const debugLog = document.getElementById("debugLog");
 const clearDebugLogBtn = document.getElementById("clearDebugLog");
 const tipText = document.getElementById("tipText");
 
-// Load tips
-try {
-  tips = JSON.parse(
-    fs.readFileSync(path.join(__dirname, "tips.json"), "utf-8"),
-  );
-} catch (_) {
-  tips = [];
-}
+// Tips
+const tips = [
+  'Did you know <strong>heckr.dev</strong> has a lot more tools which are all free to use? Visit <a href="https://tools.heckr.dev">tools.heckr.dev</a> to find out more!',
+  "FFmpeg was started in 2000 by <strong>Fabrice Bellard</strong>, who also created QEMU and the fastest known algorithm for computing pi.",
+  'The "FF" in FFmpeg originally stood for <strong>"Fast Forward"</strong>.',
+  "FFmpeg supports over <strong>100 codecs</strong> and hundreds of container formats out of the box.",
+  "The <strong>H.264</strong> codec is used by over 90% of all video on the internet.",
+  "Hardware encoding with <strong>NVENC</strong> can be up to 10x faster than software encoding, but produces slightly larger files at the same visual quality.",
+  "The <strong>MKV</strong> (Matroska) container format can hold virtually unlimited audio, video, and subtitle tracks in a single file.",
+  "A typical Blu-ray movie is around <strong>25-50 GB</strong>, but can be re-encoded to under 5 GB with minimal visual loss using HEVC.",
+  "FFmpeg can process over <strong>450 different pixel formats</strong> - far more than any human eye could distinguish.",
+  "The <strong>CRF</strong> (Constant Rate Factor) scale is logarithmic: CRF 18 produces roughly twice the file size of CRF 24 at the same resolution.",
+  "<strong>HEVC (H.265)</strong> can achieve the same quality as H.264 at roughly 50% of the file size, at the cost of slower encoding.",
+  "FFmpeg is used behind the scenes by <strong>YouTube, Netflix, VLC, and OBS</strong> - among many others.",
+  "The <strong>Opus</strong> audio codec, often used with WebM, was designed to handle everything from voice to music and beats most codecs at low bitrates.",
+  "Subtitles come in two flavors: <strong>text-based</strong> (SRT, ASS) which are tiny, and <strong>image-based</strong> (PGS, VobSub) which can be several MB.",
+  "Re-encoding audio from lossy to lossy (e.g., AAC \u2192 MP3) is called <strong>transcoding</strong> and always loses some quality - copying the stream avoids this.",
+  "The <strong>-preset</strong> flag doesn't change quality - it trades encoding speed for file size. Slower presets produce smaller files at the same quality.",
+];
 
 function showRandomTip() {
   if (tips.length === 0) return;
