@@ -14,9 +14,9 @@ let videoQuality = "22";
 let videoPreset = "medium";
 let encodeStartTime = null;
 let commandModified = false;
-let viewBeforeSettings = "drop";
 let preferredAudioLangs = [];
 let preferredSubLangs = [];
+let debugMode = false;
 let availableEncoders = {
   available: [],
   encoders: {},
@@ -47,16 +47,19 @@ const videoQualitySelect = document.getElementById("videoQuality");
 const videoPresetSelect = document.getElementById("videoPreset");
 const openSettingsBtn = document.getElementById("openSettingsBtn");
 const encoderSelect = document.getElementById("encoderSelect");
-const settingsConfigView = document.getElementById("settingsConfigView");
+const settingsOverlay = document.getElementById("settingsOverlay");
 const ffmpegPathInput = document.getElementById("ffmpegPathInput");
 const ffprobePathInput = document.getElementById("ffprobePathInput");
 const envOverrideStatus = document.getElementById("envOverrideStatus");
 const binaryCheckResult = document.getElementById("binaryCheckResult");
 const checkBinaryConfigBtn = document.getElementById("checkBinaryConfigBtn");
-const saveSettingsBtn = document.getElementById("saveSettingsBtn");
 const closeSettingsBtn = document.getElementById("closeSettingsBtn");
 const preferredAudioLangsInput = document.getElementById("preferredAudioLangs");
 const preferredSubLangsInput = document.getElementById("preferredSubLangs");
+const debugModeToggle = document.getElementById("debugModeToggle");
+const debugLogSection = document.getElementById("debugLogSection");
+const debugLog = document.getElementById("debugLog");
+const clearDebugLogBtn = document.getElementById("clearDebugLog");
 
 // Event Listeners
 dropZone.addEventListener("click", () => fileInput.click());
@@ -85,7 +88,27 @@ encodeAnotherBtn.addEventListener("click", () => location.reload());
 openSettingsBtn.addEventListener("click", openSettings);
 closeSettingsBtn.addEventListener("click", closeSettings);
 checkBinaryConfigBtn.addEventListener("click", checkBinaryConfig);
-saveSettingsBtn.addEventListener("click", saveSettings);
+settingsOverlay.addEventListener("click", (e) => {
+  if (e.target === settingsOverlay) closeSettings();
+});
+
+// Auto-save settings on change
+let settingsSaveTimer = null;
+function scheduleSettingsSave() {
+  if (settingsSaveTimer) clearTimeout(settingsSaveTimer);
+  settingsSaveTimer = setTimeout(autoSaveSettings, 500);
+}
+preferredAudioLangsInput.addEventListener("input", scheduleSettingsSave);
+preferredSubLangsInput.addEventListener("input", scheduleSettingsSave);
+ffmpegPathInput.addEventListener("input", scheduleSettingsSave);
+ffprobePathInput.addEventListener("input", scheduleSettingsSave);
+debugModeToggle.addEventListener("change", () => {
+  debugMode = debugModeToggle.checked;
+  scheduleSettingsSave();
+});
+clearDebugLogBtn.addEventListener("click", () => {
+  debugLog.textContent = "";
+});
 outputFormatSelect.addEventListener("change", (e) => {
   if (!checkCommandModification()) return;
   outputFormat = e.target.value;
@@ -892,6 +915,15 @@ async function startEncode() {
   settingsView.classList.add("hidden");
   progressView.classList.remove("hidden");
   encodeStartTime = Date.now();
+
+  // Show/hide debug log
+  debugLog.textContent = "";
+  if (debugMode) {
+    debugLogSection.classList.remove("hidden");
+  } else {
+    debugLogSection.classList.add("hidden");
+  }
+
   console.log("Starting encode for:", currentFile);
 
   try {
@@ -965,6 +997,14 @@ ipcRenderer.on("encode-progress", (event, progress) => {
   }
 });
 
+// Debug stderr handler
+ipcRenderer.on("encode-stderr", (event, text) => {
+  if (!debugMode) return;
+  debugLog.textContent += text;
+  // Auto-scroll to bottom
+  debugLog.scrollTop = debugLog.scrollHeight;
+});
+
 // Show completion
 function showCompletion(outputPath) {
   progressView.classList.add("hidden");
@@ -1011,15 +1051,11 @@ function showOnlyView(viewName) {
   settingsView.classList.add("hidden");
   progressView.classList.add("hidden");
   completionView.classList.add("hidden");
-  settingsConfigView.classList.add("hidden");
 
   if (viewName === "drop") dropZone.classList.remove("hidden");
   else if (viewName === "settings") settingsView.classList.remove("hidden");
   else if (viewName === "progress") progressView.classList.remove("hidden");
   else if (viewName === "completion") completionView.classList.remove("hidden");
-  else if (viewName === "settings-config") {
-    settingsConfigView.classList.remove("hidden");
-  }
 }
 
 function renderBinaryCheckResult(result) {
@@ -1118,8 +1154,10 @@ async function loadSettings() {
     const prefs = await ipcRenderer.invoke("get-language-prefs");
     preferredAudioLangs = prefs.audioLangs || [];
     preferredSubLangs = prefs.subLangs || [];
+    debugMode = !!prefs.debugMode;
     preferredAudioLangsInput.value = preferredAudioLangs.join(", ");
     preferredSubLangsInput.value = preferredSubLangs.join(", ");
+    debugModeToggle.checked = debugMode;
   } catch (error) {
     console.error("Failed to load language prefs:", error);
   }
@@ -1143,52 +1181,33 @@ async function checkBinaryConfig() {
   }
 }
 
-async function saveSettings() {
-  saveSettingsBtn.disabled = true;
-  saveSettingsBtn.textContent = "Saving...";
+async function autoSaveSettings() {
   try {
     // Save binary config
-    const result = await ipcRenderer.invoke(
-      "save-binary-config",
-      collectBinaryConfigInputs(),
-    );
-    ffmpegPathInput.value = result.saved.ffmpegPath || "";
-    ffprobePathInput.value = result.saved.ffprobePath || "";
-    renderBinaryCheckResult(result.check);
+    await ipcRenderer.invoke("save-binary-config", collectBinaryConfigInputs());
 
-    // Save language preferences
+    // Save language preferences + debug mode
     const audioLangs = parseLangList(preferredAudioLangsInput.value);
     const subLangs = parseLangList(preferredSubLangsInput.value);
-    await ipcRenderer.invoke("save-language-prefs", { audioLangs, subLangs });
+    await ipcRenderer.invoke("save-language-prefs", {
+      audioLangs,
+      subLangs,
+      debugMode: debugModeToggle.checked,
+    });
     preferredAudioLangs = audioLangs;
     preferredSubLangs = subLangs;
-
-    if (!result.check.allOk) {
-      alert("Settings saved, but one or more binary checks failed.");
-      return;
-    }
-
-    alert("Settings saved.");
+    debugMode = debugModeToggle.checked;
   } catch (error) {
-    console.error("Failed to save settings:", error);
-    alert("Failed to save settings: " + error.message);
-  } finally {
-    saveSettingsBtn.disabled = false;
-    saveSettingsBtn.textContent = "Save Settings";
+    console.error("Failed to auto-save settings:", error);
   }
 }
 
 function openSettings() {
-  viewBeforeSettings = getVisibleMainView();
-  showOnlyView("settings-config");
+  settingsOverlay.classList.remove("hidden");
 }
 
 function closeSettings() {
-  if (viewBeforeSettings === "drop") {
-    location.reload();
-  } else {
-    showOnlyView(viewBeforeSettings);
-  }
+  settingsOverlay.classList.add("hidden");
 }
 
 // Reset UI

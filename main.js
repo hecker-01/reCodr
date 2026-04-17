@@ -17,6 +17,7 @@ let binaryConfig = {
 let languagePrefs = {
   audioLangs: [],
   subLangs: [],
+  debugMode: false,
 };
 
 function getWindowIconPath() {
@@ -471,6 +472,7 @@ function loadLanguagePrefs() {
     languagePrefs = {
       audioLangs: Array.isArray(parsed.audioLangs) ? parsed.audioLangs : [],
       subLangs: Array.isArray(parsed.subLangs) ? parsed.subLangs : [],
+      debugMode: !!parsed.debugMode,
     };
   } catch (err) {
     console.warn("Failed to load language prefs:", err.message);
@@ -485,6 +487,7 @@ ipcMain.handle("save-language-prefs", async (event, prefs) => {
   languagePrefs = {
     audioLangs: Array.isArray(prefs.audioLangs) ? prefs.audioLangs : [],
     subLangs: Array.isArray(prefs.subLangs) ? prefs.subLangs : [],
+    debugMode: !!prefs.debugMode,
   };
   const prefsPath = getLanguagePrefsPath();
   fs.writeFileSync(prefsPath, JSON.stringify(languagePrefs, null, 2), "utf8");
@@ -760,6 +763,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
     ffmpegProcess.stderr.on("data", (data) => {
       const chunk = data.toString();
       console.log("FFmpeg stderr:", chunk);
+      event.sender.send("encode-stderr", chunk);
 
       // Accumulate stderr across chunks so the Duration line is found even
       // when it is split across Node.js data-event boundaries.  This can
@@ -790,7 +794,9 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
     };
 
     ffmpegProcess.stdout.on("data", (data) => {
-      stdoutBuffer += data.toString();
+      const rawChunk = data.toString();
+      event.sender.send("encode-stderr", rawChunk);
+      stdoutBuffer += rawChunk;
       const lines = stdoutBuffer.split(/\r?\n/);
       stdoutBuffer = lines.pop() || "";
 
@@ -915,6 +921,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
     ffmpegProcess.stderr.on("data", (data) => {
       const chunk = data.toString();
       console.log("FFmpeg stderr:", chunk);
+      event.sender.send("encode-stderr", chunk);
 
       // Accumulate stderr across chunks so the Duration line is found even
       // when it is split across Node.js data-event boundaries.  This can
@@ -944,7 +951,9 @@ ipcMain.handle("encode-custom", (event, commandString) => {
     };
 
     ffmpegProcess.stdout.on("data", (data) => {
-      stdoutBuffer += data.toString();
+      const rawChunk = data.toString();
+      event.sender.send("encode-stderr", rawChunk);
+      stdoutBuffer += rawChunk;
       const lines = stdoutBuffer.split(/\r?\n/);
       stdoutBuffer = lines.pop() || "";
 

@@ -14,9 +14,19 @@
           <span class="version">Video Re-Encoder</span>
         </div>
         <button id="openSettingsBtn" class="btn-secondary btn-header">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle; margin-right: 4px;">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            style="vertical-align: middle; margin-right: 4px"
+          >
             <circle cx="12" cy="12" r="3"></circle>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+            ></path>
           </svg>
           Settings
         </button>
@@ -204,6 +214,15 @@
             </div>
           </div>
         </section>
+
+        <!-- Debug Log -->
+        <section id="debugLogSection" class="panel hidden">
+          <div class="panel-header">
+            <h2>FFmpeg Output</h2>
+            <button id="clearDebugLog" class="btn-text">Clear</button>
+          </div>
+          <pre id="debugLog" class="debug-log"></pre>
+        </section>
       </div>
 
       <!-- Completion View -->
@@ -230,80 +249,115 @@
         </section>
       </div>
 
-      <!-- Settings View -->
-      <div id="settingsConfigView" class="main-content hidden">
-        <!-- Language Preferences -->
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Language Preferences</h2>
-          </div>
-          <div class="config-note">
-            Set preferred languages (comma-separated codes like <strong>eng, jpn, und</strong>). When a video is loaded, only tracks matching these languages will be selected by default. Leave blank to select all tracks.
-          </div>
-          <div class="info-grid">
-            <div class="info-row config-row">
-              <span class="info-label">Audio languages</span>
-              <input
-                id="preferredAudioLangs"
-                class="path-input"
-                type="text"
-                placeholder="e.g. eng, jpn"
-              />
-            </div>
-            <div class="info-row config-row">
-              <span class="info-label">Subtitle languages</span>
-              <input
-                id="preferredSubLangs"
-                class="path-input"
-                type="text"
-                placeholder="e.g. eng"
-              />
-            </div>
-          </div>
-        </section>
-
-        <!-- Binary Configuration -->
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Binary Paths</h2>
-          </div>
-          <div class="config-note">
-            Leave blank to use system PATH. Set full executable paths to
-            override.
-          </div>
-          <div id="envOverrideStatus" class="env-override-status hidden"></div>
-          <div class="info-grid">
-            <div class="info-row config-row">
-              <span class="info-label">ffmpeg path</span>
-              <input
-                id="ffmpegPathInput"
-                class="path-input"
-                type="text"
-                placeholder="Example: C:\\ffmpeg\\bin\\ffmpeg.exe"
-              />
-            </div>
-            <div class="info-row config-row">
-              <span class="info-label">ffprobe path</span>
-              <input
-                id="ffprobePathInput"
-                class="path-input"
-                type="text"
-                placeholder="Example: C:\\ffmpeg\\bin\\ffprobe.exe"
-              />
-            </div>
-          </div>
-          <div id="binaryCheckResult" class="binary-check-result"></div>
-          <div class="config-actions">
-            <button id="checkBinaryConfigBtn" class="btn-secondary">
-              Check Paths
+      <!-- Settings Modal Overlay -->
+      <div id="settingsOverlay" class="settings-overlay hidden">
+        <div class="settings-modal">
+          <div class="settings-modal-header">
+            <h2>Settings</h2>
+            <button
+              id="closeSettingsBtn"
+              class="settings-close-btn"
+              aria-label="Close settings"
+            >
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+              >
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
             </button>
           </div>
-        </section>
+          <div class="settings-modal-body">
+            <!-- Language Preferences -->
+            <section class="settings-section">
+              <h3>Language Preferences</h3>
+              <div class="config-note">
+                Comma-separated language codes (e.g.
+                <strong>eng, jpn, und</strong>). Leave blank to select all
+                tracks.
+              </div>
+              <div class="info-grid">
+                <div class="info-row config-row">
+                  <span class="info-label">Audio languages</span>
+                  <input
+                    id="preferredAudioLangs"
+                    class="path-input"
+                    type="text"
+                    placeholder="e.g. eng, jpn"
+                  />
+                </div>
+                <div class="info-row config-row">
+                  <span class="info-label">Subtitle languages</span>
+                  <input
+                    id="preferredSubLangs"
+                    class="path-input"
+                    type="text"
+                    placeholder="e.g. eng"
+                  />
+                </div>
+              </div>
+            </section>
 
-        <!-- Save / Back -->
-        <div class="config-actions">
-          <button id="saveSettingsBtn" class="btn-primary">Save Settings</button>
-          <button id="closeSettingsBtn" class="btn-text">Back</button>
+            <!-- Debug -->
+            <section class="settings-section">
+              <h3>Debug</h3>
+              <div class="info-grid">
+                <div class="info-row">
+                  <span class="info-label"
+                    >Show ffmpeg output during encoding</span
+                  >
+                  <label class="toggle-switch">
+                    <input type="checkbox" id="debugModeToggle" />
+                    <span class="toggle-slider"></span>
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <!-- Binary Configuration -->
+            <section class="settings-section">
+              <h3>Binary Paths</h3>
+              <div class="config-note">
+                Leave blank to use system PATH. Set full executable paths to
+                override.
+              </div>
+              <div
+                id="envOverrideStatus"
+                class="env-override-status hidden"
+              ></div>
+              <div class="info-grid">
+                <div class="info-row config-row">
+                  <span class="info-label">ffmpeg path</span>
+                  <input
+                    id="ffmpegPathInput"
+                    class="path-input"
+                    type="text"
+                    placeholder="Example: C:\\ffmpeg\\bin\\ffmpeg.exe"
+                  />
+                </div>
+                <div class="info-row config-row">
+                  <span class="info-label">ffprobe path</span>
+                  <input
+                    id="ffprobePathInput"
+                    class="path-input"
+                    type="text"
+                    placeholder="Example: C:\\ffmpeg\\bin\\ffprobe.exe"
+                  />
+                </div>
+              </div>
+              <div id="binaryCheckResult" class="binary-check-result"></div>
+              <div class="config-actions">
+                <button id="checkBinaryConfigBtn" class="btn-secondary">
+                  Check Paths
+                </button>
+              </div>
+            </section>
+          </div>
         </div>
       </div>
     </div>

@@ -704,6 +704,158 @@ body {
   }
 }
 
+/* Settings Modal Overlay */
+.settings-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+
+.settings-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.settings-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-modal-header h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-close-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.settings-modal-body {
+  padding: 16px 24px 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.settings-section {
+  margin-bottom: 24px;
+}
+
+.settings-section:last-child {
+  margin-bottom: 0;
+}
+
+.settings-section h3 {
+  font-size: 0.813rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+/* Toggle Switch */
+.toggle-switch {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  transition: all 0.2s;
+}
+
+.toggle-slider::before {
+  content: "";
+  position: absolute;
+  height: 16px;
+  width: 16px;
+  left: 2px;
+  bottom: 2px;
+  background: var(--text-secondary);
+  border-radius: 50%;
+  transition: all 0.2s;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(18px);
+  background: white;
+}
+
+.toggle-switch input:focus-visible + .toggle-slider {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+/* Debug Log */
+.debug-log {
+  background: var(--bg-tertiary);
+  padding: 12px;
+  border-radius: 4px;
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
