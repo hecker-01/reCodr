@@ -1,4 +1,10 @@
-const { app, BrowserWindow, ipcMain, powerSaveBlocker } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  powerSaveBlocker,
+  dialog,
+} = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { spawn } = require("child_process");
@@ -10,6 +16,7 @@ app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 let mainWindow;
 let activeEncodeJobs = 0;
 let encodePowerBlockerId = null;
+const activeFFmpegProcesses = new Set();
 let binaryConfig = {
   ffmpegPath: "",
   ffprobePath: "",
@@ -284,6 +291,14 @@ function applyHwaccelArgs(args, videoCodec) {
   // AMF, VideoToolbox, and software encoders don't need hwaccel flags
 }
 
+function safeSend(sender, channel, data) {
+  try {
+    if (!sender.isDestroyed()) {
+      sender.send(channel, data);
+    }
+  } catch (_) {}
+}
+
 function ensureRealtimeProgressArgs(args) {
   if (!args.includes("-progress")) {
     args.push("-progress", "pipe:1");
@@ -410,6 +425,39 @@ function createWindow() {
   if (process.argv.includes("--dev")) {
     mainWindow.webContents.openDevTools();
   }
+
+  mainWindow.on("close", (e) => {
+    if (activeEncodeJobs > 0) {
+      e.preventDefault();
+      dialog
+        .showMessageBox(mainWindow, {
+          type: "warning",
+          buttons: ["Cancel", "Quit"],
+          defaultId: 0,
+          cancelId: 0,
+          title: "Encoding in progress",
+          message: "An encoding job is still running. Quit anyway?",
+          detail: "This will stop the current ffmpeg process.",
+        })
+        .then(({ response }) => {
+          if (response === 1) {
+            // Kill all active ffmpeg processes
+            for (const proc of activeFFmpegProcesses) {
+              try {
+                if (process.platform === "win32") {
+                  spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"]);
+                } else {
+                  proc.kill();
+                }
+              } catch (_) {}
+            }
+            activeFFmpegProcesses.clear();
+            activeEncodeJobs = 0;
+            mainWindow.destroy();
+          }
+        });
+    }
+  });
 
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -755,6 +803,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
     const ffmpegProcess = spawn(ffmpegPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
     });
+    activeFFmpegProcesses.add(ffmpegProcess);
 
     let totalDuration = 0;
     let startTime = Date.now();
@@ -763,7 +812,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
     ffmpegProcess.stderr.on("data", (data) => {
       const chunk = data.toString();
       console.log("FFmpeg stderr:", chunk);
-      event.sender.send("encode-stderr", chunk);
+      safeSend(event.sender, "encode-stderr", chunk);
 
       // Accumulate stderr across chunks so the Duration line is found even
       // when it is split across Node.js data-event boundaries.  This can
@@ -795,7 +844,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
 
     ffmpegProcess.stdout.on("data", (data) => {
       const rawChunk = data.toString();
-      event.sender.send("encode-stderr", rawChunk);
+      safeSend(event.sender, "encode-stderr", rawChunk);
       stdoutBuffer += rawChunk;
       const lines = stdoutBuffer.split(/\r?\n/);
       stdoutBuffer = lines.pop() || "";
@@ -829,7 +878,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
               99,
               (progressStats.frame / totalFrames) * 100,
             );
-            event.sender.send("encode-progress", {
+            safeSend(event.sender, "encode-progress", {
               percent,
               currentFps: progressStats.fps,
               currentKbps: progressStats.kbps,
@@ -848,7 +897,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
             const currentTime = timeMs / 1000000; // Convert microseconds to seconds
             const percent = Math.min(99, (currentTime / totalDuration) * 100);
 
-            event.sender.send("encode-progress", {
+            safeSend(event.sender, "encode-progress", {
               percent,
               currentFps: progressStats.fps,
               currentKbps: progressStats.kbps,
@@ -861,15 +910,17 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
 
     ffmpegProcess.on("error", (err) => {
       console.error("FFmpeg process error:", err);
+      activeFFmpegProcesses.delete(ffmpegProcess);
       finalizeEncodeSession();
       reject(new Error(formatBinaryMissingMessage("ffmpeg", err)));
     });
 
     ffmpegProcess.on("close", (code) => {
       console.log("FFmpeg process closed with code:", code);
+      activeFFmpegProcesses.delete(ffmpegProcess);
       finalizeEncodeSession();
       if (code === 0) {
-        event.sender.send("encode-progress", {
+        safeSend(event.sender, "encode-progress", {
           percent: 100,
           currentFps: progressStats.fps,
           currentKbps: progressStats.kbps,
@@ -914,6 +965,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
     const ffmpegProcess = spawn(ffmpegPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
     });
+    activeFFmpegProcesses.add(ffmpegProcess);
 
     let totalDuration = 0;
     let stderrBuffer = "";
@@ -921,7 +973,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
     ffmpegProcess.stderr.on("data", (data) => {
       const chunk = data.toString();
       console.log("FFmpeg stderr:", chunk);
-      event.sender.send("encode-stderr", chunk);
+      safeSend(event.sender, "encode-stderr", chunk);
 
       // Accumulate stderr across chunks so the Duration line is found even
       // when it is split across Node.js data-event boundaries.  This can
@@ -952,7 +1004,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
 
     ffmpegProcess.stdout.on("data", (data) => {
       const rawChunk = data.toString();
-      event.sender.send("encode-stderr", rawChunk);
+      safeSend(event.sender, "encode-stderr", rawChunk);
       stdoutBuffer += rawChunk;
       const lines = stdoutBuffer.split(/\r?\n/);
       stdoutBuffer = lines.pop() || "";
@@ -987,7 +1039,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
             const currentTime = timeMs / 1000000; // Convert microseconds to seconds
             const percent = Math.min(99, (currentTime / totalDuration) * 100);
 
-            event.sender.send("encode-progress", {
+            safeSend(event.sender, "encode-progress", {
               percent,
               currentFps: progressStats.fps,
               currentKbps: progressStats.kbps,
@@ -1000,9 +1052,10 @@ ipcMain.handle("encode-custom", (event, commandString) => {
 
     ffmpegProcess.on("close", (code) => {
       console.log("Custom ffmpeg process closed with code:", code);
+      activeFFmpegProcesses.delete(ffmpegProcess);
       finalizeEncodeSession();
       if (code === 0) {
-        event.sender.send("encode-progress", {
+        safeSend(event.sender, "encode-progress", {
           percent: 100,
           currentFps: progressStats.fps,
           currentKbps: progressStats.kbps,
@@ -1016,6 +1069,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
 
     ffmpegProcess.on("error", (err) => {
       console.error("Custom ffmpeg process error:", err);
+      activeFFmpegProcesses.delete(ffmpegProcess);
       finalizeEncodeSession();
       reject(new Error(formatBinaryMissingMessage("ffmpeg", err)));
     });
