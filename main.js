@@ -14,6 +14,10 @@ let binaryConfig = {
   ffmpegPath: "",
   ffprobePath: "",
 };
+let languagePrefs = {
+  audioLangs: [],
+  subLangs: [],
+};
 
 function getWindowIconPath() {
   const iconName =
@@ -417,6 +421,7 @@ app.whenReady().then(() => {
   }
 
   loadBinaryConfig();
+  loadLanguagePrefs();
   createWindow();
 });
 
@@ -452,6 +457,38 @@ ipcMain.handle("save-binary-config", async (event, config) => {
     saved,
     check,
   };
+});
+
+function getLanguagePrefsPath() {
+  return path.join(app.getPath("userData"), "language-prefs.json");
+}
+
+function loadLanguagePrefs() {
+  try {
+    const prefsPath = getLanguagePrefsPath();
+    if (!fs.existsSync(prefsPath)) return;
+    const parsed = JSON.parse(fs.readFileSync(prefsPath, "utf8"));
+    languagePrefs = {
+      audioLangs: Array.isArray(parsed.audioLangs) ? parsed.audioLangs : [],
+      subLangs: Array.isArray(parsed.subLangs) ? parsed.subLangs : [],
+    };
+  } catch (err) {
+    console.warn("Failed to load language prefs:", err.message);
+  }
+}
+
+ipcMain.handle("get-language-prefs", async () => {
+  return languagePrefs;
+});
+
+ipcMain.handle("save-language-prefs", async (event, prefs) => {
+  languagePrefs = {
+    audioLangs: Array.isArray(prefs.audioLangs) ? prefs.audioLangs : [],
+    subLangs: Array.isArray(prefs.subLangs) ? prefs.subLangs : [],
+  };
+  const prefsPath = getLanguagePrefsPath();
+  fs.writeFileSync(prefsPath, JSON.stringify(languagePrefs, null, 2), "utf8");
+  return languagePrefs;
 });
 
 ipcMain.handle("detect-encoders", async () => {
@@ -725,7 +762,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
       if (totalDuration === 0) {
         stderrBuffer += chunk;
         const durationMatch = stderrBuffer.match(
-          /Duration: (\d+):(\d+):(\d+\.\d+)/
+          /Duration: (\d+):(\d+):(\d+\.\d+)/,
         );
         if (durationMatch) {
           const hours = parseInt(durationMatch[1]);
@@ -778,7 +815,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
             // Keep <100 during active encode; close handler emits final 100%.
             const percent = Math.min(
               99,
-              (progressStats.frame / totalFrames) * 100
+              (progressStats.frame / totalFrames) * 100,
             );
             event.sender.send("encode-progress", {
               percent,
@@ -880,7 +917,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
       if (totalDuration === 0) {
         stderrBuffer += chunk;
         const durationMatch = stderrBuffer.match(
-          /Duration: (\d+):(\d+):(\d+\.\d+)/
+          /Duration: (\d+):(\d+):(\d+\.\d+)/,
         );
         if (durationMatch) {
           const hours = parseInt(durationMatch[1]);

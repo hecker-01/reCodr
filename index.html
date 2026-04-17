@@ -13,8 +13,12 @@
           <h1>reCodr</h1>
           <span class="version">Video Re-Encoder</span>
         </div>
-        <button id="openBinaryConfigBtn" class="btn-secondary btn-header">
-          Binary Paths
+        <button id="openSettingsBtn" class="btn-secondary btn-header">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle; margin-right: 4px;">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          Settings
         </button>
       </header>
 
@@ -226,11 +230,42 @@
         </section>
       </div>
 
-      <!-- Binary Config View -->
-      <div id="binaryConfigView" class="main-content hidden">
+      <!-- Settings View -->
+      <div id="settingsConfigView" class="main-content hidden">
+        <!-- Language Preferences -->
         <section class="panel">
           <div class="panel-header">
-            <h2>Binary Configuration</h2>
+            <h2>Language Preferences</h2>
+          </div>
+          <div class="config-note">
+            Set preferred languages (comma-separated codes like <strong>eng, jpn, und</strong>). When a video is loaded, only tracks matching these languages will be selected by default. Leave blank to select all tracks.
+          </div>
+          <div class="info-grid">
+            <div class="info-row config-row">
+              <span class="info-label">Audio languages</span>
+              <input
+                id="preferredAudioLangs"
+                class="path-input"
+                type="text"
+                placeholder="e.g. eng, jpn"
+              />
+            </div>
+            <div class="info-row config-row">
+              <span class="info-label">Subtitle languages</span>
+              <input
+                id="preferredSubLangs"
+                class="path-input"
+                type="text"
+                placeholder="e.g. eng"
+              />
+            </div>
+          </div>
+        </section>
+
+        <!-- Binary Configuration -->
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Binary Paths</h2>
           </div>
           <div class="config-note">
             Leave blank to use system PATH. Set full executable paths to
@@ -262,12 +297,14 @@
             <button id="checkBinaryConfigBtn" class="btn-secondary">
               Check Paths
             </button>
-            <button id="saveBinaryConfigBtn" class="btn-primary">
-              Save Paths
-            </button>
-            <button id="closeBinaryConfigBtn" class="btn-text">Back</button>
           </div>
         </section>
+
+        <!-- Save / Back -->
+        <div class="config-actions">
+          <button id="saveSettingsBtn" class="btn-primary">Save Settings</button>
+          <button id="closeSettingsBtn" class="btn-text">Back</button>
+        </div>
       </div>
     </div>
 

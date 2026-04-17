@@ -14,7 +14,9 @@ let videoQuality = "22";
 let videoPreset = "medium";
 let encodeStartTime = null;
 let commandModified = false;
-let viewBeforeBinaryConfig = "drop";
+let viewBeforeSettings = "drop";
+let preferredAudioLangs = [];
+let preferredSubLangs = [];
 let availableEncoders = {
   available: [],
   encoders: {},
@@ -43,16 +45,18 @@ const outputFormatSelect = document.getElementById("outputFormat");
 const videoCodecSelect = document.getElementById("videoCodec");
 const videoQualitySelect = document.getElementById("videoQuality");
 const videoPresetSelect = document.getElementById("videoPreset");
-const openBinaryConfigBtn = document.getElementById("openBinaryConfigBtn");
+const openSettingsBtn = document.getElementById("openSettingsBtn");
 const encoderSelect = document.getElementById("encoderSelect");
-const binaryConfigView = document.getElementById("binaryConfigView");
+const settingsConfigView = document.getElementById("settingsConfigView");
 const ffmpegPathInput = document.getElementById("ffmpegPathInput");
 const ffprobePathInput = document.getElementById("ffprobePathInput");
 const envOverrideStatus = document.getElementById("envOverrideStatus");
 const binaryCheckResult = document.getElementById("binaryCheckResult");
 const checkBinaryConfigBtn = document.getElementById("checkBinaryConfigBtn");
-const saveBinaryConfigBtn = document.getElementById("saveBinaryConfigBtn");
-const closeBinaryConfigBtn = document.getElementById("closeBinaryConfigBtn");
+const saveSettingsBtn = document.getElementById("saveSettingsBtn");
+const closeSettingsBtn = document.getElementById("closeSettingsBtn");
+const preferredAudioLangsInput = document.getElementById("preferredAudioLangs");
+const preferredSubLangsInput = document.getElementById("preferredSubLangs");
 
 // Event Listeners
 dropZone.addEventListener("click", () => fileInput.click());
@@ -78,10 +82,10 @@ fileInput.addEventListener("change", (e) => {
 });
 changeFileBtn.addEventListener("click", () => location.reload());
 encodeAnotherBtn.addEventListener("click", () => location.reload());
-openBinaryConfigBtn.addEventListener("click", openBinaryConfig);
-closeBinaryConfigBtn.addEventListener("click", closeBinaryConfig);
+openSettingsBtn.addEventListener("click", openSettings);
+closeSettingsBtn.addEventListener("click", closeSettings);
 checkBinaryConfigBtn.addEventListener("click", checkBinaryConfig);
-saveBinaryConfigBtn.addEventListener("click", saveBinaryConfig);
+saveSettingsBtn.addEventListener("click", saveSettings);
 outputFormatSelect.addEventListener("change", (e) => {
   if (!checkCommandModification()) return;
   outputFormat = e.target.value;
@@ -121,7 +125,7 @@ encoderSelect.addEventListener("change", (e) => {
   updateCommand();
 });
 
-loadBinaryConfigForm();
+loadSettings();
 detectEncoders();
 
 // Helper to check if command was modified and warn user
@@ -340,12 +344,16 @@ function displayAudioTracks() {
       defaultAction = "aac";
     }
 
+    const language = (s.tags?.language || "und").toUpperCase();
+    const enabled = preferredAudioLangs.length === 0 ||
+      preferredAudioLangs.includes(language.toLowerCase());
+
     return {
       index: s.index,
-      enabled: true,
+      enabled,
       action: defaultAction,
       title: s.tags?.title || "",
-      language: (s.tags?.language || "und").toUpperCase(),
+      language,
       codec: s.codec_name?.toUpperCase() || "Unknown",
       channels: s.channels || "?",
       currentSizeLabel: formatTrackSizeLabel(
@@ -365,13 +373,13 @@ function renderAudioTracks() {
   audioTracksEl.innerHTML = audioTracks
     .map(
       (t, idx) => `
-    <div class="track-item">
-      <input type="checkbox" ${t.enabled ? "checked" : ""} onchange="toggleAudio(${idx}, this.checked)">
+    <div class="track-item track-toggle ${t.enabled ? "track-enabled" : "track-disabled"}" onclick="toggleAudio(${idx}, ${!t.enabled})" role="button" tabindex="0">
+      <input type="checkbox" ${t.enabled ? "checked" : ""} onclick="event.stopPropagation()" onchange="toggleAudio(${idx}, this.checked)">
       <div class="track-info">
         <span class="track-name">${t.title || "Track " + (idx + 1)}</span>
         <span class="track-meta">${t.language} · ${t.codec} · ${t.channels}ch · ${t.currentSizeLabel}</span>
       </div>
-      <select class="track-action" onchange="setAudioAction(${idx}, this.value)" ${!t.enabled ? "disabled" : ""}>
+      <select class="track-action" onclick="event.stopPropagation()" onchange="setAudioAction(${idx}, this.value)" ${!t.enabled ? "disabled" : ""}>
         <option value="copy" ${t.action === "copy" ? "selected" : ""}>Copy</option>
         <option value="aac" ${t.action === "aac" ? "selected" : ""}>AAC 192k</option>
         <option value="opus" ${t.action === "opus" ? "selected" : ""}>Opus 128k</option>
@@ -412,12 +420,16 @@ function displaySubtitleTracks() {
       defaultAction = "ass";
     }
 
+    const language = (s.tags?.language || "und").toUpperCase();
+    const enabled = preferredSubLangs.length === 0 ||
+      preferredSubLangs.includes(language.toLowerCase());
+
     return {
       index: s.index,
-      enabled: true,
+      enabled,
       action: defaultAction,
       title: s.tags?.title || "",
-      language: (s.tags?.language || "und").toUpperCase(),
+      language,
       codec: s.codec_name?.toUpperCase() || "Unknown",
       type: isImage ? "Image" : "Text",
       isImage,
@@ -438,13 +450,13 @@ function renderSubtitleTracks() {
   subtitleTracksEl.innerHTML = subtitleTracks
     .map(
       (t, idx) => `
-    <div class="track-item">
-      <input type="checkbox" ${t.enabled ? "checked" : ""} onchange="toggleSubtitle(${idx}, this.checked)">
+    <div class="track-item track-toggle ${t.enabled ? "track-enabled" : "track-disabled"}" onclick="toggleSubtitle(${idx}, ${!t.enabled})" role="button" tabindex="0">
+      <input type="checkbox" ${t.enabled ? "checked" : ""} onclick="event.stopPropagation()" onchange="toggleSubtitle(${idx}, this.checked)">
       <div class="track-info">
         <span class="track-name">${t.title || "Track " + (idx + 1)}</span>
         <span class="track-meta">${t.language} · ${t.codec} · ${t.type} · ${t.currentSizeLabel}</span>
       </div>
-      <select class="track-action" onchange="setSubtitleAction(${idx}, this.value)" ${!t.enabled ? "disabled" : ""}>
+      <select class="track-action" onclick="event.stopPropagation()" onchange="setSubtitleAction(${idx}, this.value)" ${!t.enabled ? "disabled" : ""}>
         <option value="copy" ${t.action === "copy" ? "selected" : ""}>Copy</option>
         ${!t.isImage ? `<option value="srt" ${t.action === "srt" ? "selected" : ""}>SRT</option>` : ""}
         ${!t.isImage ? `<option value="ass" ${t.action === "ass" ? "selected" : ""}>ASS</option>` : ""}
@@ -991,14 +1003,14 @@ function showOnlyView(viewName) {
   settingsView.classList.add("hidden");
   progressView.classList.add("hidden");
   completionView.classList.add("hidden");
-  binaryConfigView.classList.add("hidden");
+  settingsConfigView.classList.add("hidden");
 
   if (viewName === "drop") dropZone.classList.remove("hidden");
   else if (viewName === "settings") settingsView.classList.remove("hidden");
   else if (viewName === "progress") progressView.classList.remove("hidden");
   else if (viewName === "completion") completionView.classList.remove("hidden");
-  else if (viewName === "binary-config") {
-    binaryConfigView.classList.remove("hidden");
+  else if (viewName === "settings-config") {
+    settingsConfigView.classList.remove("hidden");
   }
 }
 
@@ -1077,7 +1089,14 @@ function collectBinaryConfigInputs() {
   };
 }
 
-async function loadBinaryConfigForm() {
+function parseLangList(str) {
+  return str
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length > 0);
+}
+
+async function loadSettings() {
   try {
     const config = await ipcRenderer.invoke("get-binary-config");
     ffmpegPathInput.value = config.ffmpegPath || "";
@@ -1086,6 +1105,15 @@ async function loadBinaryConfigForm() {
   } catch (error) {
     console.error("Failed to load binary config:", error);
     renderBinaryCheckResult(null);
+  }
+  try {
+    const prefs = await ipcRenderer.invoke("get-language-prefs");
+    preferredAudioLangs = prefs.audioLangs || [];
+    preferredSubLangs = prefs.subLangs || [];
+    preferredAudioLangsInput.value = preferredAudioLangs.join(", ");
+    preferredSubLangsInput.value = preferredSubLangs.join(", ");
+  } catch (error) {
+    console.error("Failed to load language prefs:", error);
   }
 }
 
@@ -1107,10 +1135,11 @@ async function checkBinaryConfig() {
   }
 }
 
-async function saveBinaryConfig() {
-  saveBinaryConfigBtn.disabled = true;
-  saveBinaryConfigBtn.textContent = "Saving...";
+async function saveSettings() {
+  saveSettingsBtn.disabled = true;
+  saveSettingsBtn.textContent = "Saving...";
   try {
+    // Save binary config
     const result = await ipcRenderer.invoke(
       "save-binary-config",
       collectBinaryConfigInputs(),
@@ -1119,31 +1148,38 @@ async function saveBinaryConfig() {
     ffprobePathInput.value = result.saved.ffprobePath || "";
     renderBinaryCheckResult(result.check);
 
+    // Save language preferences
+    const audioLangs = parseLangList(preferredAudioLangsInput.value);
+    const subLangs = parseLangList(preferredSubLangsInput.value);
+    await ipcRenderer.invoke("save-language-prefs", { audioLangs, subLangs });
+    preferredAudioLangs = audioLangs;
+    preferredSubLangs = subLangs;
+
     if (!result.check.allOk) {
-      alert("Paths saved, but one or more binary checks failed.");
+      alert("Settings saved, but one or more binary checks failed.");
       return;
     }
 
-    alert("Binary paths saved and verified.");
+    alert("Settings saved.");
   } catch (error) {
-    console.error("Failed to save binary config:", error);
-    alert("Failed to save binary paths: " + error.message);
+    console.error("Failed to save settings:", error);
+    alert("Failed to save settings: " + error.message);
   } finally {
-    saveBinaryConfigBtn.disabled = false;
-    saveBinaryConfigBtn.textContent = "Save Paths";
+    saveSettingsBtn.disabled = false;
+    saveSettingsBtn.textContent = "Save Settings";
   }
 }
 
-function openBinaryConfig() {
-  viewBeforeBinaryConfig = getVisibleMainView();
-  showOnlyView("binary-config");
+function openSettings() {
+  viewBeforeSettings = getVisibleMainView();
+  showOnlyView("settings-config");
 }
 
-function closeBinaryConfig() {
-  if (viewBeforeBinaryConfig === "drop") {
+function closeSettings() {
+  if (viewBeforeSettings === "drop") {
     location.reload();
   } else {
-    showOnlyView(viewBeforeBinaryConfig);
+    showOnlyView(viewBeforeSettings);
   }
 }
 

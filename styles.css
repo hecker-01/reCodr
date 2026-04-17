@@ -262,6 +262,32 @@ body {
   border-radius: 6px;
 }
 
+.track-toggle {
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid transparent;
+  user-select: none;
+}
+
+.track-toggle:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
+}
+
+.track-toggle:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+
+.track-toggle.track-disabled {
+  opacity: 0.55;
+}
+
+.track-toggle.track-enabled {
+  border-color: rgba(203, 166, 247, 0.25);
+}
+
 .track-item input[type="checkbox"] {
   width: 16px;
   height: 16px;
