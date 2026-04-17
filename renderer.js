@@ -916,6 +916,16 @@ async function startEncode() {
   progressView.classList.remove("hidden");
   encodeStartTime = Date.now();
 
+  // Start in indeterminate state until progress data arrives
+  const progressFill = document.getElementById("progressFill");
+  progressFill.parentElement.classList.add("indeterminate");
+  progressFill.style.width = "100%";
+  document.getElementById("progressPercent").textContent = "--";
+  document.getElementById("eta").textContent = "--";
+  document.getElementById("fps").textContent = "--";
+  document.getElementById("speed").textContent = "--";
+  document.getElementById("elapsedTime").textContent = "0s";
+
   // Show/hide debug log
   debugLog.textContent = "";
   if (debugMode) {
@@ -967,11 +977,22 @@ async function startEncode() {
 
 // Progress handler
 ipcRenderer.on("encode-progress", (event, progress) => {
+  const progressFill = document.getElementById("progressFill");
+  const progressBar = progressFill.parentElement;
   const percentRaw = Number(progress.percent || 0);
-  const percent = Math.max(0, Math.min(100, percentRaw));
-  document.getElementById("progressPercent").textContent =
-    `${percent.toFixed(1)}%`;
-  document.getElementById("progressFill").style.width = `${percent}%`;
+  const indeterminate = percentRaw < 0;
+
+  if (indeterminate) {
+    progressBar.classList.add("indeterminate");
+    document.getElementById("progressPercent").textContent = "--";
+    progressFill.style.width = "100%";
+  } else {
+    progressBar.classList.remove("indeterminate");
+    const percent = Math.max(0, Math.min(100, percentRaw));
+    document.getElementById("progressPercent").textContent =
+      `${percent.toFixed(1)}%`;
+    progressFill.style.width = `${percent}%`;
+  }
 
   const fpsValue = Number(progress.currentFps || 0);
   document.getElementById("fps").textContent =
@@ -990,10 +1011,20 @@ ipcRenderer.on("encode-progress", (event, progress) => {
   const elapsed = (Date.now() - encodeStartTime) / 1000;
   document.getElementById("elapsedTime").textContent = formatDuration(elapsed);
 
-  if (percent > 0) {
-    const total = (elapsed / percent) * 100;
+  // Calculate ETA from frames and fps when available
+  const currentFrame = Number(progress.currentFrame || 0);
+  const totalFrames = Number(progress.totalFrames || 0);
+
+  if (totalFrames > 0 && currentFrame > 0 && fpsValue > 0) {
+    const remainingFrames = totalFrames - currentFrame;
+    const remaining = remainingFrames / fpsValue;
+    document.getElementById("eta").textContent = formatDuration(remaining);
+  } else if (!indeterminate && percentRaw > 0 && elapsed > 0) {
+    const total = (elapsed / percentRaw) * 100;
     const remaining = total - elapsed;
     document.getElementById("eta").textContent = formatDuration(remaining);
+  } else {
+    document.getElementById("eta").textContent = "--";
   }
 });
 

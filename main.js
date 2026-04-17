@@ -872,38 +872,19 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
 
         if (line.startsWith("frame=")) {
           progressStats.frame = parseNonNegativeInt(line.split("=")[1]);
-          if (totalFrames > 0 && progressStats.frame > 0) {
-            // Keep <100 during active encode; close handler emits final 100%.
-            const percent = Math.min(
-              99,
-              (progressStats.frame / totalFrames) * 100,
-            );
-            safeSend(event.sender, "encode-progress", {
-              percent,
-              currentFps: progressStats.fps,
-              currentKbps: progressStats.kbps,
-              currentSpeed: progressStats.speed,
-            });
-          }
+          const percent =
+            totalFrames > 0 && progressStats.frame > 0
+              ? Math.min(99, (progressStats.frame / totalFrames) * 100)
+              : -1;
+          safeSend(event.sender, "encode-progress", {
+            percent,
+            currentFrame: progressStats.frame,
+            totalFrames,
+            currentFps: progressStats.fps,
+            currentKbps: progressStats.kbps,
+            currentSpeed: progressStats.speed,
+          });
           continue;
-        }
-
-        if (
-          line.startsWith("out_time_ms=") ||
-          line.startsWith("out_time_us=")
-        ) {
-          const timeMs = parseInt(line.split("=")[1], 10);
-          if (Number.isFinite(timeMs) && timeMs > 0 && totalDuration > 0) {
-            const currentTime = timeMs / 1000000; // Convert microseconds to seconds
-            const percent = Math.min(99, (currentTime / totalDuration) * 100);
-
-            safeSend(event.sender, "encode-progress", {
-              percent,
-              currentFps: progressStats.fps,
-              currentKbps: progressStats.kbps,
-              currentSpeed: progressStats.speed,
-            });
-          }
         }
       }
     });
@@ -922,6 +903,8 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
       if (code === 0) {
         safeSend(event.sender, "encode-progress", {
           percent: 100,
+          currentFrame: totalFrames,
+          totalFrames,
           currentFps: progressStats.fps,
           currentKbps: progressStats.kbps,
           currentSpeed: progressStats.speed,
@@ -1000,6 +983,7 @@ ipcMain.handle("encode-custom", (event, commandString) => {
       fps: 0,
       kbps: 0,
       speed: 0,
+      frame: 0,
     };
 
     ffmpegProcess.stdout.on("data", (data) => {
@@ -1030,22 +1014,29 @@ ipcMain.handle("encode-custom", (event, commandString) => {
           continue;
         }
 
+        if (line.startsWith("frame=")) {
+          progressStats.frame = parseNonNegativeInt(line.split("=")[1]);
+          // Custom commands don't have totalFrames; use time-based below
+          continue;
+        }
+
         if (
           line.startsWith("out_time_ms=") ||
           line.startsWith("out_time_us=")
         ) {
           const timeMs = parseInt(line.split("=")[1], 10);
-          if (Number.isFinite(timeMs) && timeMs > 0 && totalDuration > 0) {
-            const currentTime = timeMs / 1000000; // Convert microseconds to seconds
-            const percent = Math.min(99, (currentTime / totalDuration) * 100);
-
-            safeSend(event.sender, "encode-progress", {
-              percent,
-              currentFps: progressStats.fps,
-              currentKbps: progressStats.kbps,
-              currentSpeed: progressStats.speed,
-            });
-          }
+          const percent =
+            Number.isFinite(timeMs) && timeMs > 0 && totalDuration > 0
+              ? Math.min(99, (timeMs / 1000000 / totalDuration) * 100)
+              : -1;
+          safeSend(event.sender, "encode-progress", {
+            percent,
+            currentFrame: progressStats.frame,
+            totalFrames: 0,
+            currentFps: progressStats.fps,
+            currentKbps: progressStats.kbps,
+            currentSpeed: progressStats.speed,
+          });
         }
       }
     });
@@ -1057,6 +1048,8 @@ ipcMain.handle("encode-custom", (event, commandString) => {
       if (code === 0) {
         safeSend(event.sender, "encode-progress", {
           percent: 100,
+          currentFrame: progressStats.frame,
+          totalFrames: 0,
           currentFps: progressStats.fps,
           currentKbps: progressStats.kbps,
           currentSpeed: progressStats.speed,
