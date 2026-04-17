@@ -1,4 +1,4 @@
-const { ipcRenderer } = require("electron");
+const { ipcRenderer, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 
@@ -17,6 +17,8 @@ let commandModified = false;
 let preferredAudioLangs = [];
 let preferredSubLangs = [];
 let debugMode = false;
+let tips = [];
+let tipInterval = null;
 let availableEncoders = {
   available: [],
   encoders: {},
@@ -60,6 +62,57 @@ const debugModeToggle = document.getElementById("debugModeToggle");
 const debugLogSection = document.getElementById("debugLogSection");
 const debugLog = document.getElementById("debugLog");
 const clearDebugLogBtn = document.getElementById("clearDebugLog");
+const tipText = document.getElementById("tipText");
+
+// Load tips
+try {
+  tips = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "tips.json"), "utf-8"),
+  );
+} catch (_) {
+  tips = [];
+}
+
+function showRandomTip() {
+  if (tips.length === 0) return;
+  tipText.style.opacity = "0";
+  setTimeout(() => {
+    tipText.innerHTML = tips[Math.floor(Math.random() * tips.length)];
+    tipText.style.opacity = "1";
+  }, 400);
+}
+
+function startTipCycle() {
+  stopTipCycle();
+  showRandomTip();
+  tipInterval = setInterval(showRandomTip, 15000);
+}
+
+function stopTipCycle() {
+  if (tipInterval) {
+    clearInterval(tipInterval);
+    tipInterval = null;
+  }
+}
+
+function updateTipVisibility() {
+  const encoding = !progressView.classList.contains("hidden");
+  if (encoding && !debugMode) {
+    tipText.classList.remove("hidden");
+    startTipCycle();
+  } else {
+    tipText.classList.add("hidden");
+    stopTipCycle();
+  }
+}
+
+// Open tip links in external browser
+tipText.addEventListener("click", (e) => {
+  if (e.target.tagName === "A" && e.target.href) {
+    e.preventDefault();
+    shell.openExternal(e.target.href);
+  }
+});
 
 // Event Listeners
 dropZone.addEventListener("click", () => fileInput.click());
@@ -106,6 +159,7 @@ debugModeToggle.addEventListener("change", () => {
   debugMode = debugModeToggle.checked;
   if (!progressView.classList.contains("hidden")) {
     debugLogSection.classList.toggle("hidden", !debugMode);
+    updateTipVisibility();
   }
   scheduleSettingsSave();
 });
@@ -932,6 +986,7 @@ async function startEncode() {
   // Show/hide debug log
   debugLog.textContent = "";
   debugLogSection.classList.toggle("hidden", !debugMode);
+  updateTipVisibility();
 
   console.log("Starting encode for:", currentFile);
 
@@ -969,6 +1024,7 @@ async function startEncode() {
   } catch (error) {
     console.error("Encoding error:", error);
     alert("Error encoding: " + error.message);
+    stopTipCycle();
     settingsView.classList.remove("hidden");
     progressView.classList.add("hidden");
   }
@@ -1037,6 +1093,7 @@ ipcRenderer.on("encode-stderr", (event, text) => {
 
 // Show completion
 function showCompletion(outputPath) {
+  stopTipCycle();
   progressView.classList.add("hidden");
   completionView.classList.remove("hidden");
 

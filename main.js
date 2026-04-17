@@ -1,6 +1,7 @@
 const {
   app,
   BrowserWindow,
+  Menu,
   ipcMain,
   powerSaveBlocker,
   dialog,
@@ -424,6 +425,8 @@ function createWindow() {
   // Open DevTools in development
   if (process.argv.includes("--dev")) {
     mainWindow.webContents.openDevTools();
+  } else {
+    Menu.setApplicationMenu(null);
   }
 
   mainWindow.on("close", (e) => {

@@ -877,6 +877,22 @@ body {
   margin: 0;
 }
 
+.tip-text {
+  font-style: italic;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-align: center;
+  margin: 16px 0 0;
+  padding: 0 12px;
+  line-height: 1.6;
+  transition: opacity 0.4s ease;
+}
+
+.tip-text a {
+  color: var(--text-secondary);
+  text-decoration: underline;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
