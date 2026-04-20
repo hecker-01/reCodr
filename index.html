@@ -179,8 +179,16 @@
           ></code>
         </section>
 
-        <!-- Encode Button -->
-        <button id="encodeBtn" class="btn-primary">Start Encoding</button>
+        <!-- Encode Buttons -->
+        <div id="editingBanner" class="editing-banner hidden">
+          Editing queued job - changes will update the existing queue entry.
+        </div>
+        <div class="encode-actions">
+          <button id="encodeNowBtn" class="btn-primary">Encode Now</button>
+          <button id="addToQueueBtn" class="btn-secondary btn-wide">
+            Add to Queue
+          </button>
+        </div>
       </div>
 
       <!-- Progress View -->
@@ -251,6 +259,23 @@
           </button>
         </section>
       </div>
+
+      <!-- Queue Panel (shown across drop/progress/completion views) -->
+      <section id="queuePanel" class="panel queue-panel hidden">
+        <div class="panel-header">
+          <h2>Queue</h2>
+          <span id="queueStatus" class="track-count"></span>
+        </div>
+        <div id="queueList" class="queue-list"></div>
+        <div id="queueActions" class="queue-actions hidden">
+          <button id="startQueueBtn" class="btn-primary hidden">
+            Start Queue
+          </button>
+          <button id="clearFinishedBtn" class="btn-secondary hidden">
+            Clear Finished
+          </button>
+        </div>
+      </section>
 
       <!-- Settings Modal Overlay -->
       <div id="settingsOverlay" class="settings-overlay hidden">

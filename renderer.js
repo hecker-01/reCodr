@@ -25,6 +25,12 @@ let availableEncoders = {
 };
 let selectedEncoderFamily = "software";
 
+// Queue state
+let queue = [];
+let queueProcessing = false;
+let editingJobId = null;
+let currentJobId = null;
+
 // DOM Elements
 const dropZone = document.getElementById("dropZone");
 const fileInput = document.getElementById("fileInput");
@@ -39,7 +45,15 @@ const audioTracksEl = document.getElementById("audioTracks");
 const subtitleTracksEl = document.getElementById("subtitleTracks");
 const attachmentTracksEl = document.getElementById("attachmentTracks");
 const commandPreview = document.getElementById("commandPreview");
-const encodeBtn = document.getElementById("encodeBtn");
+const encodeNowBtn = document.getElementById("encodeNowBtn");
+const addToQueueBtn = document.getElementById("addToQueueBtn");
+const editingBanner = document.getElementById("editingBanner");
+const queuePanel = document.getElementById("queuePanel");
+const queueList = document.getElementById("queueList");
+const queueStatus = document.getElementById("queueStatus");
+const queueActions = document.getElementById("queueActions");
+const startQueueBtn = document.getElementById("startQueueBtn");
+const clearFinishedBtn = document.getElementById("clearFinishedBtn");
 const changeFileBtn = document.getElementById("changeFileBtn");
 const encodeAnotherBtn = document.getElementById("encodeAnotherBtn");
 const outputFormatSelect = document.getElementById("outputFormat");
@@ -146,8 +160,17 @@ fileInput.addEventListener("change", (e) => {
     processFile(e.target.files[0].path);
   }
 });
-changeFileBtn.addEventListener("click", () => location.reload());
-encodeAnotherBtn.addEventListener("click", () => location.reload());
+changeFileBtn.addEventListener("click", () => {
+  if (!checkCommandModification()) return;
+  resetCurrentFileState();
+  showOnlyView("drop");
+  renderQueue();
+});
+encodeAnotherBtn.addEventListener("click", () => {
+  resetCurrentFileState();
+  showOnlyView("drop");
+  renderQueue();
+});
 openSettingsBtn.addEventListener("click", openSettings);
 closeSettingsBtn.addEventListener("click", closeSettings);
 checkBinaryConfigBtn.addEventListener("click", checkBinaryConfig);
@@ -203,7 +226,10 @@ videoPresetSelect.addEventListener("change", (e) => {
 commandPreview.addEventListener("input", () => {
   commandModified = true;
 });
-encodeBtn.addEventListener("click", startEncode);
+encodeNowBtn.addEventListener("click", () => encodeNow());
+addToQueueBtn.addEventListener("click", () => addToQueueAction());
+startQueueBtn.addEventListener("click", () => startQueue());
+clearFinishedBtn.addEventListener("click", () => clearFinishedJobs());
 
 // Encoder change listener
 encoderSelect.addEventListener("change", (e) => {
@@ -975,69 +1001,425 @@ function updateCommand() {
   commandModified = false;
 }
 
-// Start encoding
-async function startEncode() {
+// Build a job object from the current settings view state
+function buildJobFromCurrentState() {
+  const id = editingJobId || createJobId();
+  return {
+    id,
+    file: currentFile,
+    metadata,
+    snapshot: {
+      audioTracks: JSON.parse(JSON.stringify(audioTracks)),
+      subtitleTracks: JSON.parse(JSON.stringify(subtitleTracks)),
+      attachmentTracks: JSON.parse(JSON.stringify(attachmentTracks)),
+      outputFormat,
+      videoCodec,
+      videoQuality,
+      videoPreset,
+      selectedEncoderFamily,
+      customCommand: commandModified ? commandPreview.textContent.trim() : null,
+    },
+    status: "pending",
+    error: null,
+    outputPath: getOutputPath(currentFile),
+    inputSizeMb: null,
+    outputSizeMb: null,
+  };
+}
+
+function createJobId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// Encode Now: build job, bump it to the front, then drive the queue
+async function encodeNow() {
+  if (!currentFile) return;
+  if (queueProcessing) {
+    alert("Queue is running. Use Add to Queue while a job is in progress.");
+    return;
+  }
+
+  const job = buildJobFromCurrentState();
+  const existingIdx = queue.findIndex((j) => j.id === job.id);
+  if (existingIdx >= 0) {
+    queue.splice(existingIdx, 1);
+  }
+  // Push to the front of pending jobs
+  const firstPendingIdx = queue.findIndex((j) => j.status === "pending");
+  if (firstPendingIdx < 0) {
+    queue.push(job);
+  } else {
+    queue.splice(firstPendingIdx, 0, job);
+  }
+
+  editingJobId = null;
+  // User explicitly asked to encode now — send them to progress view so
+  // runJob's guard (which protects editing users) still lets the UI advance.
+  showOnlyView("progress");
+  await startQueue();
+}
+
+// Add to Queue: append (or update if editing), return to drop zone
+function addToQueueAction() {
   if (!currentFile) return;
 
-  settingsView.classList.add("hidden");
-  progressView.classList.remove("hidden");
-  encodeStartTime = Date.now();
+  const job = buildJobFromCurrentState();
 
-  // Start in indeterminate state until progress data arrives
-  const progressFill = document.getElementById("progressFill");
-  progressFill.parentElement.classList.add("indeterminate");
-  progressFill.style.width = "100%";
-  document.getElementById("progressPercent").textContent = "--";
-  document.getElementById("eta").textContent = "--";
-  document.getElementById("fps").textContent = "--";
-  document.getElementById("speed").textContent = "--";
-  document.getElementById("elapsedTime").textContent = "0s";
+  if (editingJobId) {
+    const idx = queue.findIndex((j) => j.id === editingJobId);
+    if (idx >= 0 && queue[idx].status !== "running") {
+      // Preserve position
+      queue[idx] = job;
+    } else {
+      queue.push(job);
+    }
+    editingJobId = null;
+  } else {
+    queue.push(job);
+  }
 
-  // Show/hide debug log
-  debugLog.textContent = "";
-  debugLogSection.classList.toggle("hidden", !debugMode);
-  updateTipVisibility();
+  resetCurrentFileState();
+  showOnlyView("drop");
+  renderQueue();
+}
 
-  console.log("Starting encode for:", currentFile);
+// Start processing the queue. Safe to call repeatedly.
+async function startQueue() {
+  if (queueProcessing) return;
+  if (!queue.some((j) => j.status === "pending")) return;
+
+  queueProcessing = true;
+  renderQueue();
 
   try {
-    if (commandModified) {
-      // Use custom command from user edit
-      const customCommand = commandPreview.textContent.trim();
-      console.log("Using custom command:", customCommand);
-      await ipcRenderer.invoke("encode-custom", customCommand);
+    while (true) {
+      // Skip the job currently being edited so it can't start mid-edit.
+      const next = queue.find(
+        (j) => j.status === "pending" && j.id !== editingJobId,
+      );
+      if (!next) break;
+      await runJob(next);
+    }
+  } finally {
+    queueProcessing = false;
+    currentJobId = null;
+    stopTipCycle();
+    // Only return to drop zone if the user was actually watching progress.
+    // If they're editing another job (settings view), leave them alone.
+    const view = getVisibleMainView();
+    if (view === "progress") {
+      showOnlyView("drop");
+    }
+    renderQueue();
+  }
+}
+
+// Run a single job. Records outcome on the job; never throws.
+async function runJob(job) {
+  currentJobId = job.id;
+  job.status = "running";
+  job.error = null;
+  encodeStartTime = Date.now();
+  renderQueue();
+
+  // Only bring up the progress view if the user isn't mid-task. If they're in
+  // settings (editing another job) or completion, let them finish — the encode
+  // still runs and the queue list reflects progress.
+  const currentView = getVisibleMainView();
+  if (currentView === "drop" || currentView === "progress") {
+    showOnlyView("progress");
+    const progressFill = document.getElementById("progressFill");
+    progressFill.parentElement.classList.add("indeterminate");
+    progressFill.style.width = "100%";
+    document.getElementById("progressPercent").textContent = "--";
+    document.getElementById("eta").textContent = "--";
+    document.getElementById("fps").textContent = "--";
+    document.getElementById("speed").textContent = "--";
+    document.getElementById("elapsedTime").textContent = "0s";
+
+    debugLog.textContent = "";
+    debugLogSection.classList.toggle("hidden", !debugMode);
+    updateTipVisibility();
+  }
+
+  try {
+    if (fs.existsSync(job.file)) {
+      job.inputSizeMb = fs.statSync(job.file).size / (1024 * 1024);
+    }
+  } catch (_) {}
+
+  try {
+    if (job.snapshot.customCommand) {
+      await ipcRenderer.invoke("encode-custom", job.snapshot.customCommand);
     } else {
-      // Use auto-generated command from options
-      const outputPath = getOutputPath(currentFile);
-      console.log("Encoding to:", outputPath);
       const options = {
-        audioTracks: audioTracks.filter((t) => t.enabled),
-        subtitleTracks: subtitleTracks.filter((t) => t.enabled),
-        attachmentTracks: attachmentTracks.filter((t) => t.enabled),
-        videoCodec: videoCodec,
-        videoQuality: videoQuality,
-        videoPreset: videoPreset,
-        outputFormat: outputFormat,
-        encoderFamily: selectedEncoderFamily,
-        totalFrames: estimateTotalVideoFrames(metadata),
+        audioTracks: job.snapshot.audioTracks.filter((t) => t.enabled),
+        subtitleTracks: job.snapshot.subtitleTracks.filter((t) => t.enabled),
+        attachmentTracks: job.snapshot.attachmentTracks.filter(
+          (t) => t.enabled,
+        ),
+        videoCodec: job.snapshot.videoCodec,
+        videoQuality: job.snapshot.videoQuality,
+        videoPreset: job.snapshot.videoPreset,
+        outputFormat: job.snapshot.outputFormat,
+        encoderFamily: job.snapshot.selectedEncoderFamily,
+        totalFrames: estimateTotalVideoFrames(job.metadata),
       };
       await ipcRenderer.invoke(
         "encode-video",
-        currentFile,
-        outputPath,
+        job.file,
+        job.outputPath,
         options,
       );
     }
-    const outputPath = getOutputPath(currentFile);
-    console.log("Encode completed successfully");
-    showCompletion(outputPath);
+
+    job.status = "done";
+    try {
+      if (fs.existsSync(job.outputPath)) {
+        job.outputSizeMb = fs.statSync(job.outputPath).size / (1024 * 1024);
+      }
+    } catch (_) {}
   } catch (error) {
     console.error("Encoding error:", error);
-    alert("Error encoding: " + error.message);
-    stopTipCycle();
-    settingsView.classList.remove("hidden");
-    progressView.classList.add("hidden");
+    job.status = "error";
+    job.error = error?.message || String(error);
   }
+
+  currentJobId = null;
+  renderQueue();
+}
+
+window.removeJob = (id) => {
+  const idx = queue.findIndex((j) => j.id === id);
+  if (idx < 0) return;
+  if (queue[idx].status === "running") return;
+  queue.splice(idx, 1);
+  renderQueue();
+};
+
+window.moveJob = (id, direction) => {
+  const idx = queue.findIndex((j) => j.id === id);
+  if (idx < 0) return;
+  const target = idx + direction;
+  if (target < 0 || target >= queue.length) return;
+  // Only reorder among pending jobs; don't let a pending job jump a running one
+  if (queue[idx].status !== "pending") return;
+  if (queue[target].status === "running") return;
+  if (queue[target].status === "done" || queue[target].status === "error") {
+    // Keep finished items grouped; skip over them
+    return;
+  }
+  const tmp = queue[idx];
+  queue[idx] = queue[target];
+  queue[target] = tmp;
+  renderQueue();
+};
+
+window.editJob = async (id) => {
+  const job = queue.find((j) => j.id === id);
+  if (!job) return;
+  if (job.status === "running") return;
+
+  if (!checkCommandModification()) return;
+
+  editingJobId = id;
+  currentFile = job.file;
+  metadata = job.metadata;
+  audioTracks = JSON.parse(JSON.stringify(job.snapshot.audioTracks));
+  subtitleTracks = JSON.parse(JSON.stringify(job.snapshot.subtitleTracks));
+  attachmentTracks = JSON.parse(JSON.stringify(job.snapshot.attachmentTracks));
+  outputFormat = job.snapshot.outputFormat;
+  videoCodec = job.snapshot.videoCodec;
+  videoQuality = job.snapshot.videoQuality;
+  videoPreset = job.snapshot.videoPreset;
+  selectedEncoderFamily = job.snapshot.selectedEncoderFamily;
+
+  displayFileInfo();
+  renderAudioTracks();
+  renderSubtitleTracks();
+  renderAttachmentTracks();
+
+  // Show/hide sections based on track presence
+  audioSection.classList.toggle("hidden", audioTracks.length === 0);
+  subtitleSection.classList.toggle("hidden", subtitleTracks.length === 0);
+  attachmentSection.classList.toggle(
+    "hidden",
+    attachmentTracks.length === 0,
+  );
+
+  updateEncoderSelect();
+  updateCodecOptions();
+  updateQualityAndPresetOptions();
+  updateFormatOptions();
+
+  // Sync select elements to saved values
+  videoCodecSelect.value = videoCodec;
+  videoQualitySelect.value = videoQuality;
+  videoPresetSelect.value = videoPreset;
+  outputFormatSelect.value = outputFormat;
+
+  if (job.snapshot.customCommand) {
+    commandPreview.textContent = job.snapshot.customCommand;
+    commandModified = true;
+  } else {
+    commandModified = false;
+    updateCommand();
+  }
+
+  showOnlyView("settings");
+  renderQueue();
+};
+
+function clearFinishedJobs() {
+  queue = queue.filter((j) => j.status === "pending" || j.status === "running");
+  renderQueue();
+}
+
+function renderQueue() {
+  const pending = queue.filter((j) => j.status === "pending").length;
+  const running = queue.filter((j) => j.status === "running").length;
+  const done = queue.filter((j) => j.status === "done").length;
+  const errored = queue.filter((j) => j.status === "error").length;
+  const finished = done + errored;
+
+  const hasAny = queue.length > 0;
+  const view = getVisibleMainView();
+
+  // Show queue panel on drop, progress, and completion views when items exist.
+  // Hide on settings view so the user can focus on configuring a single file.
+  const shouldShow = hasAny && view !== "settings";
+  queuePanel.classList.toggle("hidden", !shouldShow);
+
+  if (!hasAny) {
+    queueList.innerHTML = "";
+    queueActions.classList.add("hidden");
+    return;
+  }
+
+  queueStatus.textContent = queueProcessing
+    ? `${pending} pending · ${running} running · ${finished} finished`
+    : pending > 0
+      ? `${pending} pending · ${finished} finished`
+      : `${finished} finished`;
+
+  queueList.innerHTML = queue.map(renderQueueItem).join("");
+
+  queueActions.classList.remove("hidden");
+  startQueueBtn.classList.toggle(
+    "hidden",
+    queueProcessing || pending === 0,
+  );
+  clearFinishedBtn.classList.toggle("hidden", finished === 0);
+
+  // Editing banner visibility (only relevant in settings view)
+  editingBanner.classList.toggle("hidden", !editingJobId);
+
+  // Encode Now disabled while queue is running
+  if (encodeNowBtn) {
+    encodeNowBtn.disabled = queueProcessing;
+    encodeNowBtn.title = queueProcessing
+      ? "Queue is running — use Add to Queue instead"
+      : "";
+  }
+}
+
+function renderQueueItem(job, idx) {
+  const isRunning = job.status === "running";
+  const isFinished = job.status === "done" || job.status === "error";
+  const icon = {
+    pending: "•",
+    running: "▶",
+    done: "✓",
+    error: "!",
+  }[job.status];
+
+  const filename = job.file ? job.file.split(/[\\/]/).pop() : "(unknown)";
+  const codecLabel = getCodecLabel(job.snapshot.videoCodec);
+  let meta;
+  if (job.status === "error") {
+    meta = `Error: ${job.error || "unknown error"}`;
+  } else if (job.status === "done") {
+    const inMb = job.inputSizeMb;
+    const outMb = job.outputSizeMb;
+    if (Number.isFinite(inMb) && Number.isFinite(outMb) && inMb > 0) {
+      const savings = ((1 - outMb / inMb) * 100).toFixed(1);
+      meta = `Done · ${inMb.toFixed(1)} MB → ${outMb.toFixed(1)} MB (${savings >= 0 ? "-" : "+"}${Math.abs(savings)}%)`;
+    } else {
+      meta = "Done";
+    }
+  } else {
+    meta = `${codecLabel} · Q${job.snapshot.videoQuality} · ${job.snapshot.outputFormat.toUpperCase()}`;
+  }
+
+  const firstPendingIdx = queue.findIndex((j) => j.status === "pending");
+  const lastPendingIdx = (() => {
+    for (let i = queue.length - 1; i >= 0; i--) {
+      if (queue[i].status === "pending") return i;
+    }
+    return -1;
+  })();
+  const canMoveUp =
+    job.status === "pending" && idx > firstPendingIdx;
+  const canMoveDown =
+    job.status === "pending" && idx < lastPendingIdx;
+  const canEdit = !isRunning;
+  const canRemove = !isRunning;
+
+  const escapedId = job.id.replace(/'/g, "\\'");
+  const title = escapeHtml(filename);
+  const metaClass = job.status === "error" ? "queue-item-meta error-text" : "queue-item-meta";
+
+  return `
+    <div class="queue-item status-${job.status}">
+      <div class="queue-item-status">${icon}</div>
+      <div class="queue-item-info">
+        <span class="queue-item-name" title="${title}">${title}</span>
+        <span class="${metaClass}">${escapeHtml(meta)}</span>
+      </div>
+      <div class="queue-item-actions">
+        ${isFinished || job.status === "pending" ? `
+          <button class="queue-btn" onclick="moveJob('${escapedId}', -1)" ${!canMoveUp ? "disabled" : ""} title="Move up">↑</button>
+          <button class="queue-btn" onclick="moveJob('${escapedId}', 1)" ${!canMoveDown ? "disabled" : ""} title="Move down">↓</button>
+          <button class="queue-btn" onclick="editJob('${escapedId}')" ${!canEdit ? "disabled" : ""} title="Edit">✎</button>
+          <button class="queue-btn danger" onclick="removeJob('${escapedId}')" ${!canRemove ? "disabled" : ""} title="Remove">✕</button>
+        ` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function escapeHtml(str) {
+  if (typeof str !== "string") return "";
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function resetCurrentFileState() {
+  currentFile = null;
+  metadata = null;
+  audioTracks = [];
+  subtitleTracks = [];
+  attachmentTracks = [];
+  outputFormat = "mkv";
+  commandModified = false;
+  editingJobId = null;
+
+  selectedEncoderFamily = availableEncoders.recommended || "software";
+  const defaultCodecsObj =
+    availableEncoders.encoders[selectedEncoderFamily] || {};
+  videoCodec = defaultCodecsObj.hevc || defaultCodecsObj.h264 || "libx265";
+  videoQuality = "22";
+  videoPreset = selectedEncoderFamily === "nvenc" ? "p4" : "medium";
+
+  editingBanner.classList.add("hidden");
+
+  try {
+    fileInput.value = "";
+  } catch (_) {}
 }
 
 // Progress handler
@@ -1101,40 +1483,6 @@ ipcRenderer.on("encode-stderr", (event, text) => {
   }
 });
 
-// Show completion
-function showCompletion(outputPath) {
-  stopTipCycle();
-  progressView.classList.add("hidden");
-  completionView.classList.remove("hidden");
-
-  document.getElementById("outputPath").textContent = outputPath;
-
-  try {
-    if (fs.existsSync(outputPath) && currentFile) {
-      const inputSize = fs.statSync(currentFile).size / (1024 * 1024);
-      const outputSize = fs.statSync(outputPath).size / (1024 * 1024);
-      const savings = ((1 - outputSize / inputSize) * 100).toFixed(1);
-
-      document.getElementById("sizeComparison").innerHTML = `
-        <span>${inputSize.toFixed(2)} MB</span>
-        <span class="arrow">→</span>
-        <span>${outputSize.toFixed(2)} MB</span>
-        <span class="savings ${savings > 0 ? "positive" : ""}">${savings > 0 ? "-" : "+"}${Math.abs(savings)}%</span>
-      `;
-    } else {
-      console.warn("Output file not found or currentFile is null:", {
-        outputPath,
-        currentFile,
-        exists: fs.existsSync(outputPath),
-      });
-      document.getElementById("sizeComparison").innerHTML = "";
-    }
-  } catch (error) {
-    console.error("Error displaying completion stats:", error);
-    document.getElementById("sizeComparison").innerHTML = "";
-  }
-}
-
 function getVisibleMainView() {
   if (!dropZone.classList.contains("hidden")) return "drop";
   if (!settingsView.classList.contains("hidden")) return "settings";
@@ -1153,6 +1501,9 @@ function showOnlyView(viewName) {
   else if (viewName === "settings") settingsView.classList.remove("hidden");
   else if (viewName === "progress") progressView.classList.remove("hidden");
   else if (viewName === "completion") completionView.classList.remove("hidden");
+
+  // Queue panel visibility depends on which view we're on
+  renderQueue();
 }
 
 function renderBinaryCheckResult(result) {
@@ -1305,36 +1656,6 @@ function openSettings() {
 
 function closeSettings() {
   settingsOverlay.classList.add("hidden");
-}
-
-// Reset UI
-function resetUI() {
-  currentFile = null;
-  metadata = null;
-  audioTracks = [];
-  subtitleTracks = [];
-  attachmentTracks = [];
-  outputFormat = "mkv";
-
-  // Reset to recommended encoder and its default codec
-  selectedEncoderFamily = availableEncoders.recommended || "software";
-  const defaultCodecsObj =
-    availableEncoders.encoders[selectedEncoderFamily] || {};
-  // Prefer HEVC, fall back to H264, then software default
-  videoCodec = defaultCodecsObj.hevc || defaultCodecsObj.h264 || "libx265";
-  videoQuality = "22";
-  videoPreset = selectedEncoderFamily === "nvenc" ? "p4" : "medium";
-
-  // Update selects
-  updateEncoderSelect();
-  updateCodecOptions();
-  updateQualityAndPresetOptions();
-  outputFormatSelect.value = "mkv";
-
-  dropZone.classList.remove("hidden");
-  settingsView.classList.add("hidden");
-  progressView.classList.add("hidden");
-  completionView.classList.add("hidden");
 }
 
 // Helpers
