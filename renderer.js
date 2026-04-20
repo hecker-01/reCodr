@@ -28,8 +28,10 @@ let selectedEncoderFamily = "software";
 // Queue state
 let queue = [];
 let queueProcessing = false;
+let singleEncodeMode = false;
 let editingJobId = null;
 let currentJobId = null;
+let currentJobProgress = null;
 
 // DOM Elements
 const dropZone = document.getElementById("dropZone");
@@ -1056,7 +1058,7 @@ async function encodeNow() {
   // User explicitly asked to encode now — send them to progress view so
   // runJob's guard (which protects editing users) still lets the UI advance.
   showOnlyView("progress");
-  await startQueue();
+  await startQueue({ singleEncode: true, singleJobId: job.id });
 }
 
 // Add to Queue: append (or update if editing), return to drop zone
@@ -1081,14 +1083,20 @@ function addToQueueAction() {
   resetCurrentFileState();
   showOnlyView("drop");
   renderQueue();
+
+  // Auto-start the queue so items process immediately without a manual click
+  if (!queueProcessing) {
+    startQueue();
+  }
 }
 
 // Start processing the queue. Safe to call repeatedly.
-async function startQueue() {
+async function startQueue({ singleEncode = false, singleJobId = null } = {}) {
   if (queueProcessing) return;
   if (!queue.some((j) => j.status === "pending")) return;
 
   queueProcessing = true;
+  singleEncodeMode = singleEncode;
   renderQueue();
 
   try {
@@ -1102,12 +1110,41 @@ async function startQueue() {
     }
   } finally {
     queueProcessing = false;
+    singleEncodeMode = false;
     currentJobId = null;
+    currentJobProgress = null;
     stopTipCycle();
-    // Only return to drop zone if the user was actually watching progress.
-    // If they're editing another job (settings view), leave them alone.
+
     const view = getVisibleMainView();
-    if (view === "progress") {
+    if (view === "settings") {
+      // User is mid-edit — leave them alone
+      renderQueue();
+      return;
+    }
+
+    // Single encode that succeeded → show completion screen and remove that job
+    const singleJob = singleEncode && singleJobId
+      ? queue.find((j) => j.id === singleJobId)
+      : null;
+    if (singleJob && singleJob.status === "done") {
+      queue = queue.filter((j) => j.id !== singleJobId);
+      document.getElementById("outputPath").textContent = singleJob.outputPath;
+      const inMb = singleJob.inputSizeMb;
+      const outMb = singleJob.outputSizeMb;
+      const sizeEl = document.getElementById("sizeComparison");
+      if (Number.isFinite(inMb) && Number.isFinite(outMb) && inMb > 0) {
+        const savings = ((1 - outMb / inMb) * 100).toFixed(1);
+        const sign = savings >= 0 ? "-" : "+";
+        sizeEl.innerHTML = `
+          <span>${inMb.toFixed(1)} MB</span>
+          <span class="arrow">→</span>
+          <span>${outMb.toFixed(1)} MB</span>
+          <span class="savings positive">${sign}${Math.abs(savings)}%</span>`;
+      } else {
+        sizeEl.innerHTML = "";
+      }
+      showOnlyView("completion");
+    } else {
       showOnlyView("drop");
     }
     renderQueue();
@@ -1120,13 +1157,15 @@ async function runJob(job) {
   job.status = "running";
   job.error = null;
   encodeStartTime = Date.now();
+  currentJobProgress = null;
   renderQueue();
 
-  // Only bring up the progress view if the user isn't mid-task. If they're in
-  // settings (editing another job) or completion, let them finish — the encode
-  // still runs and the queue list reflects progress.
+  // Only take over the progress view if we're already on it — meaning the
+  // user clicked "Encode Now" (which navigates there first). When the queue
+  // auto-starts from the drop zone, stay on the drop zone so the user can
+  // keep adding files; the inline queue-item progress handles feedback.
   const currentView = getVisibleMainView();
-  if (currentView === "drop" || currentView === "progress") {
+  if (currentView === "progress") {
     showOnlyView("progress");
     const progressFill = document.getElementById("progressFill");
     progressFill.parentElement.classList.add("indeterminate");
@@ -1242,10 +1281,7 @@ window.editJob = async (id) => {
   // Show/hide sections based on track presence
   audioSection.classList.toggle("hidden", audioTracks.length === 0);
   subtitleSection.classList.toggle("hidden", subtitleTracks.length === 0);
-  attachmentSection.classList.toggle(
-    "hidden",
-    attachmentTracks.length === 0,
-  );
+  attachmentSection.classList.toggle("hidden", attachmentTracks.length === 0);
 
   updateEncoderSelect();
   updateCodecOptions();
@@ -1285,9 +1321,11 @@ function renderQueue() {
   const hasAny = queue.length > 0;
   const view = getVisibleMainView();
 
-  // Show queue panel on drop, progress, and completion views when items exist.
-  // Hide on settings view so the user can focus on configuring a single file.
-  const shouldShow = hasAny && view !== "settings";
+  // Show queue panel when items exist, except:
+  // - settings/completion views
+  // - single encode mode (user clicked Encode Now; queue is just internal state)
+  const shouldShow =
+    hasAny && view !== "settings" && view !== "completion" && !singleEncodeMode;
   queuePanel.classList.toggle("hidden", !shouldShow);
 
   if (!hasAny) {
@@ -1305,32 +1343,32 @@ function renderQueue() {
   queueList.innerHTML = queue.map(renderQueueItem).join("");
 
   queueActions.classList.remove("hidden");
-  startQueueBtn.classList.toggle(
-    "hidden",
-    queueProcessing || pending === 0,
-  );
+  startQueueBtn.classList.toggle("hidden", queueProcessing || pending === 0);
   clearFinishedBtn.classList.toggle("hidden", finished === 0);
 
   // Editing banner visibility (only relevant in settings view)
   editingBanner.classList.toggle("hidden", !editingJobId);
 
-  // Encode Now disabled while queue is running
+  // Encode Now: hide while queue is running, show otherwise
   if (encodeNowBtn) {
+    encodeNowBtn.classList.toggle("hidden", queueProcessing);
     encodeNowBtn.disabled = queueProcessing;
-    encodeNowBtn.title = queueProcessing
-      ? "Queue is running — use Add to Queue instead"
-      : "";
+  }
+
+  // Add to Queue label: "Update Item" when editing an existing job
+  if (addToQueueBtn) {
+    addToQueueBtn.textContent = editingJobId ? "Update Item" : "Add to Queue";
   }
 }
 
 function renderQueueItem(job, idx) {
   const isRunning = job.status === "running";
   const isFinished = job.status === "done" || job.status === "error";
-  const icon = {
-    pending: "•",
-    running: "▶",
-    done: "✓",
-    error: "!",
+  const statusEl = {
+    pending: '<div class="qi-dot"></div>',
+    running: '<div class="qi-spinner"></div>',
+    done: '<div class="qi-check">✓</div>',
+    error: '<div class="qi-error">!</div>',
   }[job.status];
 
   const filename = job.file ? job.file.split(/[\\/]/).pop() : "(unknown)";
@@ -1348,7 +1386,16 @@ function renderQueueItem(job, idx) {
       meta = "Done";
     }
   } else {
-    meta = `${codecLabel} · Q${job.snapshot.videoQuality} · ${job.snapshot.outputFormat.toUpperCase()}`;
+    const shortEnc =
+      {
+        nvenc: "NVENC",
+        amf: "AMF",
+        qsv: "QSV",
+        videotoolbox: "VideoToolbox",
+        software: "CPU",
+      }[job.snapshot.selectedEncoderFamily] ||
+      job.snapshot.selectedEncoderFamily;
+    meta = `${codecLabel} · Q${job.snapshot.videoQuality} · ${job.snapshot.outputFormat.toUpperCase()} · ${shortEnc}`;
   }
 
   const firstPendingIdx = queue.findIndex((j) => j.status === "pending");
@@ -1358,31 +1405,45 @@ function renderQueueItem(job, idx) {
     }
     return -1;
   })();
-  const canMoveUp =
-    job.status === "pending" && idx > firstPendingIdx;
-  const canMoveDown =
-    job.status === "pending" && idx < lastPendingIdx;
+  const canMoveUp = job.status === "pending" && idx > firstPendingIdx;
+  const canMoveDown = job.status === "pending" && idx < lastPendingIdx;
   const canEdit = !isRunning;
   const canRemove = !isRunning;
 
   const escapedId = job.id.replace(/'/g, "\\'");
   const title = escapeHtml(filename);
-  const metaClass = job.status === "error" ? "queue-item-meta error-text" : "queue-item-meta";
+  const metaClass =
+    job.status === "error" ? "queue-item-meta error-text" : "queue-item-meta";
+  const progressSection = isRunning
+    ? `<div class="queue-item-progress-wrap" id="qi-progress-${job.id}">
+        <div class="queue-item-bar-track qi-indeterminate"><div class="queue-item-bar-fill"></div></div>
+        <div class="queue-item-run-stats">Initializing…</div>
+      </div>`
+    : "";
 
   return `
     <div class="queue-item status-${job.status}">
-      <div class="queue-item-status">${icon}</div>
+      <div class="queue-item-status">${statusEl}</div>
       <div class="queue-item-info">
         <span class="queue-item-name" title="${title}">${title}</span>
         <span class="${metaClass}">${escapeHtml(meta)}</span>
+        ${progressSection}
       </div>
       <div class="queue-item-actions">
-        ${isFinished || job.status === "pending" ? `
+        ${
+          job.status === "pending"
+            ? `
           <button class="queue-btn" onclick="moveJob('${escapedId}', -1)" ${!canMoveUp ? "disabled" : ""} title="Move up">↑</button>
           <button class="queue-btn" onclick="moveJob('${escapedId}', 1)" ${!canMoveDown ? "disabled" : ""} title="Move down">↓</button>
-          <button class="queue-btn" onclick="editJob('${escapedId}')" ${!canEdit ? "disabled" : ""} title="Edit">✎</button>
-          <button class="queue-btn danger" onclick="removeJob('${escapedId}')" ${!canRemove ? "disabled" : ""} title="Remove">✕</button>
-        ` : ""}
+          <button class="queue-btn" onclick="editJob('${escapedId}')" title="Edit">✎</button>
+          <button class="queue-btn danger" onclick="removeJob('${escapedId}')" title="Remove">✕</button>
+        `
+            : isFinished
+              ? `
+          <button class="queue-btn danger" onclick="removeJob('${escapedId}')" title="Remove">✕</button>
+        `
+              : ""
+        }
       </div>
     </div>
   `;
@@ -1417,6 +1478,10 @@ function resetCurrentFileState() {
 
   editingBanner.classList.add("hidden");
 
+  // Reset button labels now that editing is cancelled
+  if (encodeNowBtn) encodeNowBtn.classList.toggle("hidden", queueProcessing);
+  if (addToQueueBtn) addToQueueBtn.textContent = "Add to Queue";
+
   try {
     fileInput.value = "";
   } catch (_) {}
@@ -1435,10 +1500,10 @@ ipcRenderer.on("encode-progress", (event, progress) => {
     progressFill.style.width = "100%";
   } else {
     progressBar.classList.remove("indeterminate");
-    const percent = Math.max(0, Math.min(100, percentRaw));
+    const percent = Math.max(0, percentRaw);
     document.getElementById("progressPercent").textContent =
       `${percent.toFixed(1)}%`;
-    progressFill.style.width = `${percent}%`;
+    progressFill.style.width = `${Math.min(100, percent)}%`;
   }
 
   const fpsValue = Number(progress.currentFps || 0);
@@ -1461,18 +1526,27 @@ ipcRenderer.on("encode-progress", (event, progress) => {
   // Calculate ETA from frames and fps when available
   const currentFrame = Number(progress.currentFrame || 0);
   const totalFrames = Number(progress.totalFrames || 0);
+  let etaText = "--";
 
   if (totalFrames > 0 && currentFrame > 0 && fpsValue > 0) {
     const remainingFrames = totalFrames - currentFrame;
     const remaining = remainingFrames / fpsValue;
-    document.getElementById("eta").textContent = formatDuration(remaining);
+    etaText = formatDuration(remaining);
   } else if (!indeterminate && percentRaw > 0 && elapsed > 0) {
     const total = (elapsed / percentRaw) * 100;
     const remaining = total - elapsed;
-    document.getElementById("eta").textContent = formatDuration(remaining);
-  } else {
-    document.getElementById("eta").textContent = "--";
+    etaText = formatDuration(remaining);
   }
+  document.getElementById("eta").textContent = etaText;
+
+  // Store for live queue item updates
+  currentJobProgress = {
+    percent: percentRaw,
+    fps: fpsValue,
+    elapsedText: formatDuration(elapsed),
+    etaText,
+  };
+  updateRunningQueueItemStats();
 });
 
 // Debug stderr handler
@@ -1482,6 +1556,33 @@ ipcRenderer.on("encode-stderr", (event, text) => {
     debugLog.scrollTop = debugLog.scrollHeight;
   }
 });
+
+function updateRunningQueueItemStats() {
+  if (!currentJobId || !currentJobProgress) return;
+  const wrap = document.getElementById(`qi-progress-${currentJobId}`);
+  if (!wrap) return;
+
+  const { percent, fps, elapsedText, etaText } = currentJobProgress;
+  const isIndeterminate = percent <= 0;
+  const track = wrap.querySelector(".queue-item-bar-track");
+  const fill = wrap.querySelector(".queue-item-bar-fill");
+  const statsEl = wrap.querySelector(".queue-item-run-stats");
+
+  if (isIndeterminate) {
+    track.classList.add("qi-indeterminate");
+    fill.style.width = "100%";
+  } else {
+    track.classList.remove("qi-indeterminate");
+    fill.style.width = `${Math.min(100, percent)}%`;
+  }
+
+  const parts = [];
+  if (!isIndeterminate) parts.push(`${percent.toFixed(1)}%`);
+  if (elapsedText && elapsedText !== "0s") parts.push(`${elapsedText} elapsed`);
+  if (etaText && etaText !== "--") parts.push(`ETA ${etaText}`);
+  if (fps > 0) parts.push(`${fps.toFixed(1)} fps`);
+  statsEl.textContent = parts.length > 0 ? parts.join(" · ") : "Initializing…";
+}
 
 function getVisibleMainView() {
   if (!dropZone.classList.contains("hidden")) return "drop";

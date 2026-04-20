@@ -877,7 +877,7 @@ ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
           progressStats.frame = parseNonNegativeInt(line.split("=")[1]);
           const percent =
             totalFrames > 0 && progressStats.frame > 0
-              ? Math.min(99, (progressStats.frame / totalFrames) * 100)
+              ? (progressStats.frame / totalFrames) * 100
               : -1;
           safeSend(event.sender, "encode-progress", {
             percent,

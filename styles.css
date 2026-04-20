@@ -928,66 +928,153 @@ body {
 
 /* Queue Panel */
 .queue-panel {
-  margin-top: 0;
+  margin-top: 20px;
 }
 
 .queue-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .queue-empty {
-  padding: 20px 12px;
+  padding: 24px 12px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 0.875rem;
+  font-size: 0.813rem;
 }
 
 .queue-item {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px;
+  padding: 10px 12px;
   background: var(--bg-tertiary);
   border-radius: 6px;
   border: 1px solid transparent;
-  transition: border-color 0.2s;
+  border-left: 3px solid var(--bg-hover);
+  transition:
+    border-color 0.2s,
+    background 0.2s;
+  position: relative;
+  overflow: hidden;
 }
 
 .queue-item.status-running {
-  border-color: rgba(203, 166, 247, 0.5);
-  background: rgba(203, 166, 247, 0.08);
+  border-color: rgba(203, 166, 247, 0.2);
+  border-left-color: var(--accent);
+  background: rgba(203, 166, 247, 0.06);
+  align-items: flex-start;
 }
 
 .queue-item.status-done {
-  border-color: rgba(166, 227, 161, 0.35);
-  background: rgba(166, 227, 161, 0.06);
+  border-color: rgba(166, 227, 161, 0.2);
+  border-left-color: var(--success);
+  background: rgba(166, 227, 161, 0.04);
 }
 
 .queue-item.status-error {
-  border-color: rgba(243, 139, 168, 0.5);
-  background: rgba(243, 139, 168, 0.1);
+  border-color: rgba(243, 139, 168, 0.3);
+  border-left-color: #f38ba8;
+  background: rgba(243, 139, 168, 0.06);
 }
 
+/* Status indicator */
 .queue-item-status {
-  width: 22px;
+  width: 20px;
   flex-shrink: 0;
-  text-align: center;
-  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.qi-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0.4;
+}
+
+.qi-check,
+.qi-error {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1e1e2e;
+  flex-shrink: 0;
+}
+
+.qi-check {
+  background: var(--success);
+}
+.qi-error {
+  background: #f38ba8;
+}
+
+.qi-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(203, 166, 247, 0.25);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: qi-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes qi-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Queue item inline progress bar (running state) */
+.queue-item-progress-wrap {
+  margin-top: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.queue-item-bar-track {
+  height: 3px;
+  background: rgba(203, 166, 247, 0.12);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.queue-item-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.queue-item-bar-track.qi-indeterminate .queue-item-bar-fill {
+  width: 100% !important;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--accent) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: indeterminate 1.5s ease-in-out infinite;
+}
+
+.queue-item-run-stats {
+  font-size: 0.7rem;
   color: var(--text-muted);
+  letter-spacing: 0.01em;
 }
 
 .queue-item.status-running .queue-item-status {
-  color: var(--accent);
-}
-
-.queue-item.status-done .queue-item-status {
-  color: var(--success);
-}
-
-.queue-item.status-error .queue-item-status {
-  color: #f38ba8;
+  padding-top: 2px;
 }
 
 .queue-item-info {
@@ -1005,6 +1092,11 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.queue-item.status-done .queue-item-name,
+.queue-item.status-error .queue-item-name {
+  color: var(--text-secondary);
 }
 
 .queue-item-meta {
@@ -1027,14 +1119,14 @@ body {
 }
 
 .queue-btn {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  color: var(--text-secondary);
-  width: 30px;
-  height: 30px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  width: 28px;
+  height: 28px;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 0.875rem;
+  font-size: 0.813rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1045,17 +1137,18 @@ body {
 .queue-btn:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
-  border-color: var(--text-muted);
+  border-color: var(--border);
 }
 
 .queue-btn:disabled {
-  opacity: 0.3;
+  opacity: 0.2;
   cursor: not-allowed;
 }
 
 .queue-btn.danger:hover:not(:disabled) {
+  background: rgba(243, 139, 168, 0.1);
   color: #f38ba8;
-  border-color: #f38ba8;
+  border-color: rgba(243, 139, 168, 0.3);
 }
 
 .queue-actions {
