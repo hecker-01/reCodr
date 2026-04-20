@@ -1,6 +1,6 @@
 {
   "name": "recodr",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "Video re-encoder with GUI using ffmpeg",
   "main": "main.js",
   "scripts": {
@@ -58,10 +58,7 @@
         "portable",
         "nsis"
       ],
-      "icon": "assets/icon.ico",
-      "signAndEditExecutable": false,
-      "certificateFile": null,
-      "certificatePassword": null
+      "icon": "assets/icon.ico"
     },
     "portable": {
       "artifactName": "${productName}-${version}-${arch}-portable.${ext}"
