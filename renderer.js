@@ -33,6 +33,10 @@ let editingJobId = null;
 let currentJobId = null;
 let currentJobProgress = null;
 
+// Batch drop state
+let pendingFiles = [];
+let pendingFileIndex = 0;
+
 // DOM Elements
 const dropZone = document.getElementById("dropZone");
 const fileInput = document.getElementById("fileInput");
@@ -153,14 +157,18 @@ dropZone.addEventListener("dragleave", (e) => {
 dropZone.addEventListener("drop", (e) => {
   e.preventDefault();
   dropZone.classList.remove("drag-over");
-  if (e.dataTransfer.files.length > 0) {
-    processFile(e.dataTransfer.files[0].path);
-  }
+  const files = Array.from(e.dataTransfer.files).map(f => f.path).filter(Boolean);
+  if (files.length === 0) return;
+  pendingFiles = files;
+  pendingFileIndex = 0;
+  processFile(pendingFiles[0]);
 });
 fileInput.addEventListener("change", (e) => {
-  if (e.target.files.length > 0) {
-    processFile(e.target.files[0].path);
-  }
+  const files = Array.from(e.target.files).map(f => f.path).filter(Boolean);
+  if (files.length === 0) return;
+  pendingFiles = files;
+  pendingFileIndex = 0;
+  processFile(pendingFiles[0]);
 });
 changeFileBtn.addEventListener("click", () => {
   if (!checkCommandModification()) return;
@@ -299,6 +307,41 @@ function updateEncoderSelect() {
     .join("");
 }
 
+function updateBatchBanner() {
+  const batchBanner = document.getElementById("batchBanner");
+  if (!batchBanner) return;
+  const isBatch = pendingFiles.length > 1;
+  batchBanner.classList.toggle("hidden", !isBatch);
+  if (isBatch) {
+    const remaining = pendingFiles.length - pendingFileIndex - 1;
+    batchBanner.textContent = `File ${pendingFileIndex + 1} of ${pendingFiles.length}`;
+    if (addToQueueBtn) {
+      addToQueueBtn.textContent = remaining > 0
+        ? `Add to Queue & Next (${remaining} remaining)`
+        : "Add to Queue";
+    }
+    if (encodeNowBtn) {
+      encodeNowBtn.classList.toggle("hidden", remaining > 0 || queueProcessing);
+    }
+  } else {
+    if (addToQueueBtn) addToQueueBtn.textContent = "Add to Queue";
+    if (encodeNowBtn) encodeNowBtn.classList.toggle("hidden", queueProcessing);
+  }
+}
+
+function advancePendingFiles() {
+  pendingFileIndex++;
+  if (pendingFileIndex < pendingFiles.length) {
+    processFile(pendingFiles[pendingFileIndex]);
+  } else {
+    pendingFiles = [];
+    pendingFileIndex = 0;
+    resetCurrentFileState();
+    showOnlyView("drop");
+    renderQueue();
+  }
+}
+
 // Process file
 async function processFile(filePath) {
   console.log("Processing file:", filePath);
@@ -317,6 +360,7 @@ async function processFile(filePath) {
 
     dropZone.classList.add("hidden");
     settingsView.classList.remove("hidden");
+    updateBatchBanner();
   } catch (error) {
     console.error("Error processing file:", error);
     alert("Error reading video file: " + error.message);
@@ -1055,6 +1099,8 @@ async function encodeNow() {
   }
 
   editingJobId = null;
+  pendingFiles = [];
+  pendingFileIndex = 0;
   // User explicitly asked to encode now — send them to progress view so
   // runJob's guard (which protects editing users) still lets the UI advance.
   showOnlyView("progress");
@@ -1076,17 +1122,15 @@ function addToQueueAction() {
       queue.push(job);
     }
     editingJobId = null;
+    resetCurrentFileState();
+    showOnlyView("drop");
+    renderQueue();
+    if (!queueProcessing) startQueue();
   } else {
     queue.push(job);
-  }
-
-  resetCurrentFileState();
-  showOnlyView("drop");
-  renderQueue();
-
-  // Auto-start the queue so items process immediately without a manual click
-  if (!queueProcessing) {
-    startQueue();
+    renderQueue();
+    if (!queueProcessing) startQueue();
+    advancePendingFiles();
   }
 }
 
@@ -1468,6 +1512,8 @@ function resetCurrentFileState() {
   outputFormat = "mkv";
   commandModified = false;
   editingJobId = null;
+  pendingFiles = [];
+  pendingFileIndex = 0;
 
   selectedEncoderFamily = availableEncoders.recommended || "software";
   const defaultCodecsObj =
@@ -1481,6 +1527,7 @@ function resetCurrentFileState() {
   // Reset button labels now that editing is cancelled
   if (encodeNowBtn) encodeNowBtn.classList.toggle("hidden", queueProcessing);
   if (addToQueueBtn) addToQueueBtn.textContent = "Add to Queue";
+  updateBatchBanner();
 
   try {
     fileInput.value = "";

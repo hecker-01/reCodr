@@ -47,13 +47,14 @@
             <polyline points="17 8 12 3 7 8"></polyline>
             <line x1="12" y1="3" x2="12" y2="15"></line>
           </svg>
-          <p class="drop-title">Drop video file here</p>
+          <p class="drop-title">Drop video file(s) here</p>
           <p class="drop-subtitle">or click to browse</p>
         </div>
         <input
           type="file"
           id="fileInput"
           accept="video/*,.mkv,.avi,.mov,.mp4,.webm,.flv,.wmv,.m4v,.ts,.mts"
+          multiple
           style="display: none"
         />
       </div>
@@ -180,6 +181,7 @@
         </section>
 
         <!-- Encode Buttons -->
+        <div id="batchBanner" class="batch-banner hidden"></div>
         <div id="editingBanner" class="editing-banner hidden">
           Editing queued job - changes will update the existing queue entry.
         </div>

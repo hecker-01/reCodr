@@ -926,6 +926,16 @@ body {
   font-size: 0.813rem;
 }
 
+.batch-banner {
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  background: rgba(137, 180, 250, 0.1);
+  border: 1px solid rgba(137, 180, 250, 0.35);
+  color: #89b4fa;
+  font-size: 0.813rem;
+}
+
 /* Queue Panel */
 .queue-panel {
   margin-top: 20px;
