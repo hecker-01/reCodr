@@ -1,0 +1,160 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_description:
+        description: "Release notes (shown on the GitHub release page)"
+        required: true
+        type: string
+
+jobs:
+  # ── Pre-flight: read version, fail fast if it already has a release ─────────
+  check-version:
+    name: Check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      prev_version: ${{ steps.get-prev.outputs.prev_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version from package.json
+        id: get-version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "📦 Version: $VERSION"
+
+      - name: Fail if release already exists
+        run: |
+          if gh release view "${{ steps.get-version.outputs.version }}" \
+               --repo "${{ github.repository }}" &>/dev/null; then
+            echo "::error::Release ${{ steps.get-version.outputs.version }} already exists." \
+                 " Bump the version in package.json before triggering this workflow."
+            exit 1
+          fi
+          echo "✅ ${{ steps.get-version.outputs.version }} is new — proceeding."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get previous release tag
+        id: get-prev
+        run: |
+          PREV=$(gh release list --repo "${{ github.repository }}" \
+                   --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+          echo "prev_version=$PREV" >> "$GITHUB_OUTPUT"
+          echo "🔖 Previous release: ${PREV:-'(none)'}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Windows: NSIS installer + portable .exe ──────────────────────────────────
+  build-windows:
+    name: Build Windows
+    needs: check-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - name: Build
+        run: npm run build:win          # already sets CSC_IDENTITY_AUTO_DISCOVERY via `set`
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: release/*.exe
+          if-no-files-found: error
+
+  # ── macOS Intel: DMG + ZIP ───────────────────────────────────────────────────
+  build-mac:
+    name: Build macOS (Intel)
+    needs: check-version
+    runs-on: macos-13              # macos-13 = Intel x86_64; macos-14+ = Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - name: Build
+        run: npm run build:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-artifacts
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
+
+  # ── Linux: AppImage + DEB ────────────────────────────────────────────────────
+  build-linux:
+    name: Build Linux
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - name: Install system deps (deb packaging)
+        run: sudo apt-get install -y fakeroot
+      - run: npm ci
+      - name: Build
+        run: npm run build:linux
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: |
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: error
+
+  # ── Combine all artifacts and publish the release ────────────────────────────
+  create-release:
+    name: Create GitHub Release
+    needs: [check-version, build-windows, build-mac, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true      # flatten into a single directory
+
+      - name: List files to be released
+        run: ls -lh artifacts/
+
+      - name: Build release notes
+        run: |
+          printf '%s' "$RELEASE_NOTES" > /tmp/notes.md
+          if [ -n "$PREV_VERSION" ]; then
+            printf '\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
+              "${{ github.repository }}" "$PREV_VERSION" "${{ needs.check-version.outputs.version }}" \
+              >> /tmp/notes.md
+          fi
+        env:
+          RELEASE_NOTES: ${{ github.event.inputs.release_description }}
+          PREV_VERSION: ${{ needs.check-version.outputs.prev_version }}
+
+      - name: Publish release
+        run: |
+          gh release create "${{ needs.check-version.outputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --title "reCodr ${{ needs.check-version.outputs.version }}" \
+            --notes-file /tmp/notes.md \
+            artifacts/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

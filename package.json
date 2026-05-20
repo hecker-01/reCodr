@@ -1,6 +1,6 @@
 {
   "name": "recodr",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "Video re-encoder with GUI using ffmpeg",
   "main": "main.js",
   "scripts": {
