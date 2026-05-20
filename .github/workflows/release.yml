@@ -37,7 +37,7 @@ jobs:
           fi
           echo "✅ ${{ steps.get-version.outputs.version }} is new — proceeding."
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
       - name: Get previous release tag
         id: get-prev
@@ -47,7 +47,7 @@ jobs:
           echo "prev_version=$PREV" >> "$GITHUB_OUTPUT"
           echo "🔖 Previous release: ${PREV:-'(none)'}"
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
   # ── Windows: NSIS installer + portable .exe ──────────────────────────────────
   build-windows:
@@ -62,9 +62,9 @@ jobs:
           cache: "npm"
       - run: npm ci
       - name: Build
-        run: npm run build:win          # already sets CSC_IDENTITY_AUTO_DISCOVERY via `set`
+        run: npm run build:win # already sets CSC_IDENTITY_AUTO_DISCOVERY via `set`
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -76,7 +76,7 @@ jobs:
   build-mac:
     name: Build macOS (universal)
     needs: check-version
-    runs-on: macos-latest          # Apple Silicon runner; universal flag covers Intel too
+    runs-on: macos-latest # Apple Silicon runner; universal flag covers Intel too
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -88,7 +88,7 @@ jobs:
         run: npx electron-builder --mac --universal
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -116,7 +116,7 @@ jobs:
         run: npm run build:linux
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -136,7 +136,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true      # flatten into a single directory
+          merge-multiple: true # flatten into a single directory
 
       - name: List files to be released
         run: ls -lh artifacts/
@@ -161,4 +161,4 @@ jobs:
             --notes-file /tmp/notes.md \
             artifacts/*
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
