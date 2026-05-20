@@ -72,9 +72,9 @@ jobs:
 
   # ── macOS Intel: DMG + ZIP ───────────────────────────────────────────────────
   build-mac:
-    name: Build macOS (Intel)
+    name: Build macOS (universal)
     needs: check-version
-    runs-on: macos-13              # macos-13 = Intel x86_64; macos-14+ = Apple Silicon
+    runs-on: macos-latest          # Apple Silicon runner; universal flag covers Intel too
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -83,7 +83,7 @@ jobs:
           cache: "npm"
       - run: npm ci
       - name: Build
-        run: npm run build:mac
+        run: npx electron-builder --mac --universal
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
       - name: Upload artifacts
