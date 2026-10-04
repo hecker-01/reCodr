@@ -8,6 +8,7 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 const { spawn } = require("child_process");
 
 app.commandLine.appendSwitch("disable-renderer-backgrounding");
@@ -641,7 +642,7 @@ ipcMain.handle("detect-encoders", async () => {
 });
 
 // IPC handlers for video processing
-ipcMain.handle("get-video-info", async (event, filePath) => {
+function probeVideo(filePath) {
   return new Promise((resolve, reject) => {
     const ffprobePath = resolveBinaryPath("ffprobe");
     let timedOut = false;
@@ -697,379 +698,484 @@ ipcMain.handle("get-video-info", async (event, filePath) => {
       }
     });
   });
-});
+}
 
-ipcMain.handle("encode-video", (event, inputPath, outputPath, options = {}) => {
-  return new Promise((resolve, reject) => {
-    beginEncodePerformanceMode();
-    let settled = false;
-    const finalizeEncodeSession = () => {
-      if (settled) return;
-      settled = true;
-      endEncodePerformanceMode();
-    };
+ipcMain.handle("get-video-info", async (event, filePath) => probeVideo(filePath));
 
-    const videoCodec = options.videoCodec || "hevc_nvenc";
-    const videoQuality = options.videoQuality || "22";
-    const encoderFamily = getEncoderFamily(videoCodec);
-    const videoPreset =
-      options.videoPreset || (encoderFamily === "nvenc" ? "p4" : "medium");
-    const totalFrames = parseNonNegativeInt(options.totalFrames);
+async function validateEncodedMovie(outputPath, expectedDuration, encodedFrames, expectedFrames) {
+  const output = await probeVideo(outputPath);
+  const video = output.streams?.find(
+    (stream) => stream.codec_type === "video" && !stream.disposition?.attached_pic,
+  );
+  if (!video || !(video.width > 0) || !(video.height > 0)) {
+    throw new Error("Encoding produced no playable movie video stream.");
+  }
+  const duration = Number(output.format?.duration);
+  const tolerance = Math.max(2, expectedDuration * 0.01);
+  if (expectedDuration > 0 && (!Number.isFinite(duration) || duration < expectedDuration - tolerance)) {
+    throw new Error(`Encoding ended early: output is ${Number.isFinite(duration) ? duration.toFixed(1) : "unknown"} seconds; expected about ${expectedDuration.toFixed(1)} seconds. The incomplete file has been kept for inspection.`);
+  }
+  // Audio can retain the full duration even if almost no video was encoded.
+  if (expectedFrames > 0 && encodedFrames < expectedFrames * 0.1) {
+    throw new Error(`Encoding produced only ${encodedFrames} video frames; expected about ${expectedFrames}. The incomplete file has been kept for inspection.`);
+  }
+}
 
-    const args = [];
-    applyHwaccelArgs(args, videoCodec);
-    args.push("-i", inputPath);
-
-    // Map video stream
-    args.push("-map", "0:v");
-
-    // Map enabled audio tracks
-    const audioTracks = options.audioTracks || [];
-    audioTracks.forEach((t) => {
-      args.push("-map", `0:${t.index}`);
-    });
-
-    // Map enabled subtitle tracks
-    const subtitleTracks = options.subtitleTracks || [];
-    subtitleTracks.forEach((t) => {
-      args.push("-map", `0:${t.index}`);
-    });
-
-    // Map enabled attachment tracks (fonts)
-    const attachmentTracks = options.attachmentTracks || [];
-    attachmentTracks.forEach((t) => {
-      args.push("-map", `0:${t.index}`);
-    });
-
-    // Apply selected video codec settings
-    applyVideoEncodingArgs(args, videoCodec, videoQuality, videoPreset);
-
-    // Audio codec settings per track
-    audioTracks.forEach((t, idx) => {
-      if (t.action === "copy") {
-        args.push(`-c:a:${idx}`, "copy");
-      } else if (t.action === "aac") {
-        args.push(`-c:a:${idx}`, "aac");
-        args.push(`-b:a:${idx}`, "192k");
-        if (t.channels > 2) {
-          args.push(`-ac:a:${idx}`, "2");
-        }
-      } else if (t.action === "opus") {
-        args.push(`-c:a:${idx}`, "libopus");
-        args.push(`-b:a:${idx}`, "128k");
-        if (t.channels > 2) {
-          args.push(`-ac:a:${idx}`, "2");
-        }
-      } else if (t.action === "ac3") {
-        args.push(`-c:a:${idx}`, "ac3");
-        args.push(`-b:a:${idx}`, "384k");
-      }
-    });
-
-    // Subtitle codec settings per track
-    subtitleTracks.forEach((t, idx) => {
-      if (t.action === "copy") {
-        args.push(`-c:s:${idx}`, "copy");
-      } else if (t.action === "srt") {
-        args.push(`-c:s:${idx}`, "srt");
-      } else if (t.action === "ass") {
-        args.push(`-c:s:${idx}`, "ass");
-      } else if (t.action === "mov_text") {
-        args.push(`-c:s:${idx}`, "mov_text");
-      }
-    });
-
-    // Copy attachments (fonts)
-    if (attachmentTracks.length > 0) {
-      args.push("-c:t", "copy");
+async function prepareAttachments(inputPath, tracks) {
+  if (!tracks.length) return { tracks: [], cleanup() {} };
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "recodr-attachments-"));
+  const cleanup = () => {
+    try { fs.rmSync(directory, { recursive: true, force: true }); }
+    catch (error) { console.warn("Could not remove temporary attachments:", error.message); }
+  };
+  try {
+    const extracted = tracks.map((track, index) => ({
+      ...track,
+      extractedPath: path.join(directory, `${index}.bin`),
+    }));
+    const args = ["-nostdin", "-y", "-v", "error"];
+    for (const track of extracted) {
+      args.push(`-dump_attachment:${track.index}`, track.extractedPath);
     }
+    args.push("-i", inputPath, "-map", "0:V:0", "-frames:v", "0", "-f", "null", "-");
+    await new Promise((resolve, reject) => {
+      const child = spawn(resolveBinaryPath("ffmpeg"), args);
+      activeFFmpegProcesses.add(child);
+      let stderr = "";
+      child.stdout.resume();
+      child.stderr.on("data", (data) => { stderr = (stderr + data).slice(-8000); });
+      child.on("error", (error) => {
+        activeFFmpegProcesses.delete(child);
+        reject(new Error(formatBinaryMissingMessage("ffmpeg", error)));
+      });
+      child.on("close", (code) => {
+        activeFFmpegProcesses.delete(child);
+        if (code === 0) resolve();
+        else reject(new Error(`Failed to preserve embedded attachments: ${stderr}`));
+      });
+    });
+    for (const track of extracted) {
+      if (!fs.existsSync(track.extractedPath)) throw new Error(`Could not extract attachment ${track.index}.`);
+    }
+    return { tracks: extracted, cleanup };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
 
-    // If no tracks specified, fall back to copy all
-    if (audioTracks.length === 0 && subtitleTracks.length === 0) {
-      args.length = 0;
+function appendAttachmentArgs(args, tracks) {
+  tracks.forEach((track, index) => {
+    args.push("-attach", track.extractedPath);
+    args.push(`-metadata:s:t:${index}`, `filename=${track.filename || `attachment-${track.index}`}`);
+    args.push(`-metadata:s:t:${index}`, `mimetype=${track.mimetype || "application/octet-stream"}`);
+  });
+}
+
+async function prepareCommandAttachments(args) {
+  const inputIndex = args.indexOf("-i");
+  if (inputIndex < 0 || !args.includes("-map")) return prepareAttachments("", []);
+  const metadata = await probeVideo(args[inputIndex + 1]);
+  const mappedAttachments = (metadata.streams || []).filter((stream) =>
+    stream.codec_type === "attachment" && args.some((arg, index) =>
+      arg === "-map" && args[index + 1] === `0:${stream.index}`,
+    ),
+  );
+  const prepared = await prepareAttachments(args[inputIndex + 1], mappedAttachments.map((stream) => ({
+    index: stream.index,
+    filename: stream.tags?.filename,
+    mimetype: stream.tags?.mimetype,
+  })));
+  for (let index = args.length - 2; index >= 0; index--) {
+    if (args[index] === "-map" && mappedAttachments.some((stream) => args[index + 1] === `0:${stream.index}`)) {
+      args.splice(index, 2);
+    }
+  }
+  const attachmentArgs = [];
+  appendAttachmentArgs(attachmentArgs, prepared.tracks);
+  args.splice(args.length - 1, 0, ...attachmentArgs);
+  return prepared;
+}
+
+ipcMain.handle("encode-video", async (event, inputPath, outputPath, options = {}) => {
+  beginEncodePerformanceMode();
+  let attachments;
+  try {
+    attachments = await prepareAttachments(inputPath, options.attachmentTracks || []);
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      const finalizeEncodeSession = () => {
+        if (settled) return;
+        settled = true;
+      };
+
+      const videoCodec = options.videoCodec || "hevc_nvenc";
+      const videoQuality = options.videoQuality || "22";
+      const encoderFamily = getEncoderFamily(videoCodec);
+      const videoPreset =
+        options.videoPreset || (encoderFamily === "nvenc" ? "p4" : "medium");
+      const totalFrames = parseNonNegativeInt(options.totalFrames);
+
+      const args = [];
       applyHwaccelArgs(args, videoCodec);
       args.push("-i", inputPath);
-      args.push("-map", "0");
+
+      // Map video stream
+      args.push("-map", "0:V:0");
+
+      // Map enabled audio tracks
+      const audioTracks = options.audioTracks || [];
+      audioTracks.forEach((t) => {
+        args.push("-map", `0:${t.index}`);
+      });
+
+      // Map enabled subtitle tracks
+      const subtitleTracks = options.subtitleTracks || [];
+      subtitleTracks.forEach((t) => {
+        args.push("-map", `0:${t.index}`);
+      });
+
+      // Reattach extracted fonts instead of mapping attachment streams. Some
+      // FFmpeg builds stall the video pipeline when these streams are mapped.
+      const attachmentTracks = options.attachmentTracks || [];
+      appendAttachmentArgs(args, attachments.tracks);
+
+      // Apply selected video codec settings
       applyVideoEncodingArgs(args, videoCodec, videoQuality, videoPreset);
-      args.push("-c:a", "copy");
-      args.push("-c:s", "copy");
-    }
 
-    // Add progress output with frequent update cadence.
-    ensureRealtimeProgressArgs(args);
-    args.push(outputPath);
-
-    const ffmpegPath = resolveBinaryPath("ffmpeg");
-    console.log("Starting ffmpeg at:", ffmpegPath);
-    console.log("Command args:", args);
-
-    const ffmpegProcess = spawn(ffmpegPath, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    activeFFmpegProcesses.add(ffmpegProcess);
-
-    let totalDuration = 0;
-    let startTime = Date.now();
-    let stderrBuffer = "";
-
-    ffmpegProcess.stderr.on("data", (data) => {
-      const chunk = data.toString();
-      console.log("FFmpeg stderr:", chunk);
-      safeSend(event.sender, "encode-stderr", chunk);
-
-      // Accumulate stderr across chunks so the Duration line is found even
-      // when it is split across Node.js data-event boundaries.  This can
-      // happen with files that have many attachment streams (embedded fonts),
-      // which generate a large block of stream-info output before encoding.
-      if (totalDuration === 0) {
-        stderrBuffer += chunk;
-        const durationMatch = stderrBuffer.match(
-          /Duration: (\d+):(\d+):(\d+\.\d+)/,
-        );
-        if (durationMatch) {
-          const hours = parseInt(durationMatch[1]);
-          const minutes = parseInt(durationMatch[2]);
-          const seconds = parseFloat(durationMatch[3]);
-          totalDuration = hours * 3600 + minutes * 60 + seconds;
-          console.log("Total duration:", totalDuration, "seconds");
-          stderrBuffer = ""; // free memory once duration is captured
+      // Audio codec settings per track
+      audioTracks.forEach((t, idx) => {
+        if (t.action === "copy") {
+          args.push(`-c:a:${idx}`, "copy");
+        } else if (t.action === "aac") {
+          args.push(`-c:a:${idx}`, "aac");
+          args.push(`-b:a:${idx}`, "192k");
+          if (t.channels > 2) {
+            args.push(`-ac:a:${idx}`, "2");
+          }
+        } else if (t.action === "opus") {
+          args.push(`-c:a:${idx}`, "libopus");
+          args.push(`-b:a:${idx}`, "128k");
+          if (t.channels > 2) {
+            args.push(`-ac:a:${idx}`, "2");
+          }
+        } else if (t.action === "ac3") {
+          args.push(`-c:a:${idx}`, "ac3");
+          args.push(`-b:a:${idx}`, "384k");
         }
+      });
+
+      // Subtitle codec settings per track
+      subtitleTracks.forEach((t, idx) => {
+        if (t.action === "copy") {
+          args.push(`-c:s:${idx}`, "copy");
+        } else if (t.action === "srt") {
+          args.push(`-c:s:${idx}`, "srt");
+        } else if (t.action === "ass") {
+          args.push(`-c:s:${idx}`, "ass");
+        } else if (t.action === "mov_text") {
+          args.push(`-c:s:${idx}`, "mov_text");
+        }
+      });
+
+      // Copy attachments (fonts)
+      if (attachmentTracks.length > 0) {
+        args.push("-c:t", "copy");
       }
-    });
 
-    let stdoutBuffer = "";
-    const progressStats = {
-      fps: 0,
-      kbps: 0,
-      speed: 0,
-      frame: 0,
-    };
+      // Add progress output with frequent update cadence.
+      ensureRealtimeProgressArgs(args);
+      args.push(outputPath);
 
-    ffmpegProcess.stdout.on("data", (data) => {
-      const rawChunk = data.toString();
-      safeSend(event.sender, "encode-stderr", rawChunk);
-      stdoutBuffer += rawChunk;
-      const lines = stdoutBuffer.split(/\r?\n/);
-      stdoutBuffer = lines.pop() || "";
+      const ffmpegPath = resolveBinaryPath("ffmpeg");
+      console.log("Starting ffmpeg at:", ffmpegPath);
+      console.log("Command args:", args);
 
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) continue;
+      const ffmpegProcess = spawn(ffmpegPath, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      activeFFmpegProcesses.add(ffmpegProcess);
 
-        if (line.startsWith("fps=")) {
-          const value = parseFloat(line.split("=")[1]);
-          if (Number.isFinite(value)) progressStats.fps = value;
-          continue;
+      let totalDuration = 0;
+      let startTime = Date.now();
+      let stderrBuffer = "";
+      let stderrTail = "";
+
+      ffmpegProcess.stderr.on("data", (data) => {
+        const chunk = data.toString();
+        stderrTail = (stderrTail + chunk).slice(-8000);
+        console.log("FFmpeg stderr:", chunk);
+        safeSend(event.sender, "encode-stderr", chunk);
+
+        // Accumulate stderr across chunks so the Duration line is found even
+        // when it is split across Node.js data-event boundaries.  This can
+        // happen with files that have many attachment streams (embedded fonts),
+        // which generate a large block of stream-info output before encoding.
+        if (totalDuration === 0) {
+          stderrBuffer += chunk;
+          const durationMatch = stderrBuffer.match(
+            /Duration: (\d+):(\d+):(\d+\.\d+)/,
+          );
+          if (durationMatch) {
+            const hours = parseInt(durationMatch[1]);
+            const minutes = parseInt(durationMatch[2]);
+            const seconds = parseFloat(durationMatch[3]);
+            totalDuration = hours * 3600 + minutes * 60 + seconds;
+            console.log("Total duration:", totalDuration, "seconds");
+            stderrBuffer = ""; // free memory once duration is captured
+          }
         }
+      });
 
-        if (line.startsWith("bitrate=")) {
-          progressStats.kbps = parseKbitsPerSecond(line.split("=")[1]);
-          continue;
+      let stdoutBuffer = "";
+      const progressStats = {
+        fps: 0,
+        kbps: 0,
+        speed: 0,
+        frame: 0,
+      };
+
+      ffmpegProcess.stdout.on("data", (data) => {
+        const rawChunk = data.toString();
+        safeSend(event.sender, "encode-stderr", rawChunk);
+        stdoutBuffer += rawChunk;
+        const lines = stdoutBuffer.split(/\r?\n/);
+        stdoutBuffer = lines.pop() || "";
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line) continue;
+
+          if (line.startsWith("fps=")) {
+            const value = parseFloat(line.split("=")[1]);
+            if (Number.isFinite(value)) progressStats.fps = value;
+            continue;
+          }
+
+          if (line.startsWith("bitrate=")) {
+            progressStats.kbps = parseKbitsPerSecond(line.split("=")[1]);
+            continue;
+          }
+
+          if (line.startsWith("speed=")) {
+            const value = parseFloat(line.split("=")[1]);
+            if (Number.isFinite(value)) progressStats.speed = value;
+            continue;
+          }
+
+          if (line.startsWith("frame=")) {
+            progressStats.frame = parseNonNegativeInt(line.split("=")[1]);
+            const percent =
+              totalFrames > 0 && progressStats.frame > 0
+                ? (progressStats.frame / totalFrames) * 100
+                : -1;
+            safeSend(event.sender, "encode-progress", {
+              percent,
+              currentFrame: progressStats.frame,
+              totalFrames,
+              currentFps: progressStats.fps,
+              currentKbps: progressStats.kbps,
+              currentSpeed: progressStats.speed,
+            });
+            continue;
+          }
         }
+      });
 
-        if (line.startsWith("speed=")) {
-          const value = parseFloat(line.split("=")[1]);
-          if (Number.isFinite(value)) progressStats.speed = value;
-          continue;
-        }
+      ffmpegProcess.on("error", (err) => {
+        console.error("FFmpeg process error:", err);
+        activeFFmpegProcesses.delete(ffmpegProcess);
+        finalizeEncodeSession();
+        reject(new Error(formatBinaryMissingMessage("ffmpeg", err)));
+      });
 
-        if (line.startsWith("frame=")) {
-          progressStats.frame = parseNonNegativeInt(line.split("=")[1]);
-          const percent =
-            totalFrames > 0 && progressStats.frame > 0
-              ? (progressStats.frame / totalFrames) * 100
-              : -1;
+      ffmpegProcess.on("close", async (code) => {
+        console.log("FFmpeg process closed with code:", code);
+        activeFFmpegProcesses.delete(ffmpegProcess);
+        if (settled) return;
+        finalizeEncodeSession();
+        if (code === 0) {
+          try {
+            await validateEncodedMovie(
+              outputPath,
+              Number(options.duration) || totalDuration,
+              progressStats.frame,
+              totalFrames,
+            );
+          } catch (error) {
+            reject(error);
+            return;
+          }
           safeSend(event.sender, "encode-progress", {
-            percent,
-            currentFrame: progressStats.frame,
+            percent: 100,
+            currentFrame: totalFrames,
             totalFrames,
             currentFps: progressStats.fps,
             currentKbps: progressStats.kbps,
             currentSpeed: progressStats.speed,
           });
-          continue;
+          resolve({ success: true });
+        } else {
+          reject(new Error(`ffmpeg failed with code ${code}:\n${stderrTail.trim()}`));
         }
-      }
+      });
     });
-
-    ffmpegProcess.on("error", (err) => {
-      console.error("FFmpeg process error:", err);
-      activeFFmpegProcesses.delete(ffmpegProcess);
-      finalizeEncodeSession();
-      reject(new Error(formatBinaryMissingMessage("ffmpeg", err)));
-    });
-
-    ffmpegProcess.on("close", (code) => {
-      console.log("FFmpeg process closed with code:", code);
-      activeFFmpegProcesses.delete(ffmpegProcess);
-      finalizeEncodeSession();
-      if (code === 0) {
-        safeSend(event.sender, "encode-progress", {
-          percent: 100,
-          currentFrame: totalFrames,
-          totalFrames,
-          currentFps: progressStats.fps,
-          currentKbps: progressStats.kbps,
-          currentSpeed: progressStats.speed,
-        });
-        resolve({ success: true });
-      } else {
-        reject(new Error(`ffmpeg failed with code ${code}`));
-      }
-    });
-  });
+  } finally {
+    attachments?.cleanup();
+    endEncodePerformanceMode();
+  }
 });
 
 // Handle custom ffmpeg commands
-ipcMain.handle("encode-custom", (event, commandString) => {
-  return new Promise((resolve, reject) => {
-    beginEncodePerformanceMode();
-    let settled = false;
-    const finalizeEncodeSession = () => {
-      if (settled) return;
-      settled = true;
-      endEncodePerformanceMode();
-    };
-
-    // Parse the command string to extract the actual ffmpeg arguments
-    // The command comes as: ffmpeg -i "input" ... "output"
-    // We need to split it properly, respecting quoted strings
-
+ipcMain.handle("encode-custom", async (event, commandString) => {
+  beginEncodePerformanceMode();
+  let attachments;
+  try {
     const args = parseCommandString(commandString);
+    if (args[0] === "ffmpeg") args.shift();
+    attachments = await prepareCommandAttachments(args);
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      const finalizeEncodeSession = () => {
+        if (settled) return;
+        settled = true;
+      };
 
-    // Remove 'ffmpeg' from the beginning if present
-    if (args[0] === "ffmpeg") {
-      args.shift();
-    }
+      // Ensure progress reporting is active and frequent.
+      ensureRealtimeProgressArgs(args);
 
-    // Ensure progress reporting is active and frequent.
-    ensureRealtimeProgressArgs(args);
+      const ffmpegPath = resolveBinaryPath("ffmpeg");
+      console.log("Starting custom ffmpeg at:", ffmpegPath);
 
-    const ffmpegPath = resolveBinaryPath("ffmpeg");
-    console.log("Starting custom ffmpeg at:", ffmpegPath);
+      const ffmpegProcess = spawn(ffmpegPath, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      activeFFmpegProcesses.add(ffmpegProcess);
 
-    const ffmpegProcess = spawn(ffmpegPath, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    activeFFmpegProcesses.add(ffmpegProcess);
+      let totalDuration = 0;
+      let stderrBuffer = "";
+      let stderrTail = "";
 
-    let totalDuration = 0;
-    let stderrBuffer = "";
+      ffmpegProcess.stderr.on("data", (data) => {
+        const chunk = data.toString();
+        stderrTail = (stderrTail + chunk).slice(-8000);
+        console.log("FFmpeg stderr:", chunk);
+        safeSend(event.sender, "encode-stderr", chunk);
 
-    ffmpegProcess.stderr.on("data", (data) => {
-      const chunk = data.toString();
-      console.log("FFmpeg stderr:", chunk);
-      safeSend(event.sender, "encode-stderr", chunk);
-
-      // Accumulate stderr across chunks so the Duration line is found even
-      // when it is split across Node.js data-event boundaries.  This can
-      // happen with files that have many attachment streams (embedded fonts),
-      // which generate a large block of stream-info output before encoding.
-      if (totalDuration === 0) {
-        stderrBuffer += chunk;
-        const durationMatch = stderrBuffer.match(
-          /Duration: (\d+):(\d+):(\d+\.\d+)/,
-        );
-        if (durationMatch) {
-          const hours = parseInt(durationMatch[1]);
-          const minutes = parseInt(durationMatch[2]);
-          const seconds = parseFloat(durationMatch[3]);
-          totalDuration = hours * 3600 + minutes * 60 + seconds;
-          console.log("Total duration:", totalDuration, "seconds");
-          stderrBuffer = ""; // free memory once duration is captured
+        // Accumulate stderr across chunks so the Duration line is found even
+        // when it is split across Node.js data-event boundaries.  This can
+        // happen with files that have many attachment streams (embedded fonts),
+        // which generate a large block of stream-info output before encoding.
+        if (totalDuration === 0) {
+          stderrBuffer += chunk;
+          const durationMatch = stderrBuffer.match(
+            /Duration: (\d+):(\d+):(\d+\.\d+)/,
+          );
+          if (durationMatch) {
+            const hours = parseInt(durationMatch[1]);
+            const minutes = parseInt(durationMatch[2]);
+            const seconds = parseFloat(durationMatch[3]);
+            totalDuration = hours * 3600 + minutes * 60 + seconds;
+            console.log("Total duration:", totalDuration, "seconds");
+            stderrBuffer = ""; // free memory once duration is captured
+          }
         }
-      }
-    });
+      });
 
-    let stdoutBuffer = "";
-    const progressStats = {
-      fps: 0,
-      kbps: 0,
-      speed: 0,
-      frame: 0,
-    };
+      let stdoutBuffer = "";
+      const progressStats = {
+        fps: 0,
+        kbps: 0,
+        speed: 0,
+        frame: 0,
+      };
 
-    ffmpegProcess.stdout.on("data", (data) => {
-      const rawChunk = data.toString();
-      safeSend(event.sender, "encode-stderr", rawChunk);
-      stdoutBuffer += rawChunk;
-      const lines = stdoutBuffer.split(/\r?\n/);
-      stdoutBuffer = lines.pop() || "";
+      ffmpegProcess.stdout.on("data", (data) => {
+        const rawChunk = data.toString();
+        safeSend(event.sender, "encode-stderr", rawChunk);
+        stdoutBuffer += rawChunk;
+        const lines = stdoutBuffer.split(/\r?\n/);
+        stdoutBuffer = lines.pop() || "";
 
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line) continue;
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line) continue;
 
-        if (line.startsWith("fps=")) {
-          const value = parseFloat(line.split("=")[1]);
-          if (Number.isFinite(value)) progressStats.fps = value;
-          continue;
+          if (line.startsWith("fps=")) {
+            const value = parseFloat(line.split("=")[1]);
+            if (Number.isFinite(value)) progressStats.fps = value;
+            continue;
+          }
+
+          if (line.startsWith("bitrate=")) {
+            progressStats.kbps = parseKbitsPerSecond(line.split("=")[1]);
+            continue;
+          }
+
+          if (line.startsWith("speed=")) {
+            const value = parseFloat(line.split("=")[1]);
+            if (Number.isFinite(value)) progressStats.speed = value;
+            continue;
+          }
+
+          if (line.startsWith("frame=")) {
+            progressStats.frame = parseNonNegativeInt(line.split("=")[1]);
+            // Custom commands don't have totalFrames; use time-based below
+            continue;
+          }
+
+          if (
+            line.startsWith("out_time_ms=") ||
+            line.startsWith("out_time_us=")
+          ) {
+            const timeMs = parseInt(line.split("=")[1], 10);
+            const percent =
+              Number.isFinite(timeMs) && timeMs > 0 && totalDuration > 0
+                ? Math.min(99, (timeMs / 1000000 / totalDuration) * 100)
+                : -1;
+            safeSend(event.sender, "encode-progress", {
+              percent,
+              currentFrame: progressStats.frame,
+              totalFrames: 0,
+              currentFps: progressStats.fps,
+              currentKbps: progressStats.kbps,
+              currentSpeed: progressStats.speed,
+            });
+          }
         }
+      });
 
-        if (line.startsWith("bitrate=")) {
-          progressStats.kbps = parseKbitsPerSecond(line.split("=")[1]);
-          continue;
-        }
-
-        if (line.startsWith("speed=")) {
-          const value = parseFloat(line.split("=")[1]);
-          if (Number.isFinite(value)) progressStats.speed = value;
-          continue;
-        }
-
-        if (line.startsWith("frame=")) {
-          progressStats.frame = parseNonNegativeInt(line.split("=")[1]);
-          // Custom commands don't have totalFrames; use time-based below
-          continue;
-        }
-
-        if (
-          line.startsWith("out_time_ms=") ||
-          line.startsWith("out_time_us=")
-        ) {
-          const timeMs = parseInt(line.split("=")[1], 10);
-          const percent =
-            Number.isFinite(timeMs) && timeMs > 0 && totalDuration > 0
-              ? Math.min(99, (timeMs / 1000000 / totalDuration) * 100)
-              : -1;
+      ffmpegProcess.on("close", (code) => {
+        console.log("Custom ffmpeg process closed with code:", code);
+        activeFFmpegProcesses.delete(ffmpegProcess);
+        if (settled) return;
+        finalizeEncodeSession();
+        if (code === 0) {
           safeSend(event.sender, "encode-progress", {
-            percent,
+            percent: 100,
             currentFrame: progressStats.frame,
             totalFrames: 0,
             currentFps: progressStats.fps,
             currentKbps: progressStats.kbps,
             currentSpeed: progressStats.speed,
           });
+          resolve({ success: true });
+        } else {
+          reject(new Error(`FFmpeg exited with code ${code}:\n${stderrTail.trim()}`));
         }
-      }
-    });
+      });
 
-    ffmpegProcess.on("close", (code) => {
-      console.log("Custom ffmpeg process closed with code:", code);
-      activeFFmpegProcesses.delete(ffmpegProcess);
-      finalizeEncodeSession();
-      if (code === 0) {
-        safeSend(event.sender, "encode-progress", {
-          percent: 100,
-          currentFrame: progressStats.frame,
-          totalFrames: 0,
-          currentFps: progressStats.fps,
-          currentKbps: progressStats.kbps,
-          currentSpeed: progressStats.speed,
-        });
-        resolve({ success: true });
-      } else {
-        reject(new Error(`FFmpeg exited with code ${code}`));
-      }
+      ffmpegProcess.on("error", (err) => {
+        console.error("Custom ffmpeg process error:", err);
+        activeFFmpegProcesses.delete(ffmpegProcess);
+        finalizeEncodeSession();
+        reject(new Error(formatBinaryMissingMessage("ffmpeg", err)));
+      });
     });
-
-    ffmpegProcess.on("error", (err) => {
-      console.error("Custom ffmpeg process error:", err);
-      activeFFmpegProcesses.delete(ffmpegProcess);
-      finalizeEncodeSession();
-      reject(new Error(formatBinaryMissingMessage("ffmpeg", err)));
-    });
-  });
+  } finally {
+    attachments?.cleanup();
+    endEncodePerformanceMode();
+  }
 });
 
 // Parse command string respecting quoted arguments

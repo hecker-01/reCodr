@@ -1,15 +1,20 @@
 {
   "name": "recodr",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Video re-encoder with GUI using ffmpeg",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "prebuild": "npm version patch --no-git-tag-version",
     "build": "set CSC_IDENTITY_AUTO_DISCOVERY=false && electron-builder",
+    "prebuild:win": "npm version patch --no-git-tag-version",
     "build:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false && electron-builder --win",
+    "prebuild:mac": "npm version patch --no-git-tag-version",
     "build:mac": "electron-builder --mac",
+    "prebuild:linux": "npm version patch --no-git-tag-version",
     "build:linux": "electron-builder --linux",
+    "prebuild:full": "npm version patch --no-git-tag-version",
     "build:full": "set CSC_IDENTITY_AUTO_DISCOVERY=false && electron-builder --win --mac --linux"
   },
   "keywords": [

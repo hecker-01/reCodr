@@ -371,7 +371,7 @@ async function processFile(filePath) {
 // Display file info
 function displayFileInfo() {
   const format = metadata.format;
-  const video = metadata.streams.find((s) => s.codec_type === "video");
+  const video = metadata.streams.find((s) => s.codec_type === "video" && !s.disposition?.attached_pic);
 
   const size = (parseInt(format.size) / (1024 * 1024)).toFixed(2) + " MB";
   const duration = formatDuration(parseFloat(format.duration) || 0);
@@ -446,7 +446,7 @@ function parseFrameRate(rate) {
 
 function estimateTotalVideoFrames(videoMetadata) {
   const videoStream = videoMetadata?.streams?.find(
-    (s) => s.codec_type === "video",
+    (s) => s.codec_type === "video" && !s.disposition?.attached_pic,
   );
   if (!videoStream) return 0;
 
@@ -975,7 +975,7 @@ function updateCommand() {
     // software: no hwaccel flags needed
   }
 
-  parts.push(`-i ${inputFile}`, "-map 0:v");
+  parts.push(`-i ${inputFile}`, "-map 0:V:0");
 
   const enabledAudio = audioTracks.filter((t) => t.enabled);
   enabledAudio.forEach((t) => parts.push(`-map 0:${t.index}`));
@@ -1247,6 +1247,7 @@ async function runJob(job) {
         outputFormat: job.snapshot.outputFormat,
         encoderFamily: job.snapshot.selectedEncoderFamily,
         totalFrames: estimateTotalVideoFrames(job.metadata),
+        duration: Number(job.metadata?.format?.duration) || 0,
       };
       await ipcRenderer.invoke(
         "encode-video",
