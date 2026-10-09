@@ -3,6 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'self'"
+    />
     <title>reCodr</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -11,7 +15,7 @@
       <header class="app-header">
         <div class="header-left">
           <h1>reCodr</h1>
-          <span class="version">Video Re-Encoder</span>
+          <span class="version" id="versionLabel">Video Re-Encoder</span>
         </div>
         <button id="openSettingsBtn" class="btn-secondary btn-header">
           <svg
@@ -33,7 +37,13 @@
       </header>
 
       <!-- Drop Zone -->
-      <div id="dropZone" class="drop-zone">
+      <div
+        id="dropZone"
+        class="drop-zone"
+        role="button"
+        tabindex="0"
+        aria-label="Choose video files"
+      >
         <div class="drop-content">
           <svg
             width="48"
@@ -50,14 +60,8 @@
           <p class="drop-title">Drop video file(s) here</p>
           <p class="drop-subtitle">or click to browse</p>
         </div>
-        <input
-          type="file"
-          id="fileInput"
-          accept="video/*,.mkv,.avi,.mov,.mp4,.webm,.flv,.wmv,.m4v,.ts,.mts"
-          multiple
-          style="display: none"
-        />
       </div>
+      <div id="noticeArea" class="notice-area" aria-live="polite"></div>
 
       <!-- Settings View -->
       <div id="settingsView" class="main-content hidden">
@@ -68,6 +72,51 @@
             <button id="changeFileBtn" class="btn-text">Change</button>
           </div>
           <div id="fileInfo" class="info-grid"></div>
+        </section>
+
+        <section class="panel title-panel">
+          <div class="panel-header">
+            <h2>Titles</h2>
+            <span class="track-count">Per file</span>
+          </div>
+          <div class="settings-grid">
+            <label class="setting-field"
+              >Movie title mode<select
+                id="movieTitleMode"
+                class="info-value-select"
+              >
+                <option value="preserve">Keep source title</option>
+                <option value="manual">Set title</option>
+                <option value="template">Use saved template</option>
+                <option value="clear">Clear title</option>
+              </select></label
+            >
+            <label class="setting-field"
+              >Movie title<input
+                id="movieTitleValue"
+                class="path-input title-input"
+                type="text"
+                placeholder="Source title preserved"
+            /></label>
+            <label class="setting-field"
+              >Video stream title mode<select
+                id="videoTitleMode"
+                class="info-value-select"
+              >
+                <option value="preserve">Keep source title</option>
+                <option value="manual">Set title</option>
+                <option value="template">Use saved template</option>
+                <option value="clear">Clear title</option>
+              </select></label
+            >
+            <label class="setting-field"
+              >Video stream title<input
+                id="videoTitleValue"
+                class="path-input title-input"
+                type="text"
+                placeholder="Source title preserved"
+            /></label>
+          </div>
         </section>
 
         <!-- Video Settings -->
@@ -84,11 +133,7 @@
             </div>
             <div class="info-row">
               <span class="info-label">Codec</span>
-              <select
-                id="videoCodec"
-                class="info-value-select"
-                onchange="updateCommand()"
-              >
+              <select id="videoCodec" class="info-value-select">
                 <option value="hevc_nvenc">HEVC (H.265) NVENC</option>
                 <option value="h264_nvenc">H.264 (AVC) NVENC</option>
                 <option value="vp9">VP9</option>
@@ -97,11 +142,7 @@
             </div>
             <div class="info-row">
               <span class="info-label">Quality</span>
-              <select
-                id="videoQuality"
-                class="info-value-select"
-                onchange="updateCommand()"
-              >
+              <select id="videoQuality" class="info-value-select">
                 <option value="22">CQ 22 (Default)</option>
                 <option value="15">CQ 15 (High)</option>
                 <option value="28">CQ 28 (Medium)</option>
@@ -110,11 +151,7 @@
             </div>
             <div class="info-row">
               <span class="info-label">Preset</span>
-              <select
-                id="videoPreset"
-                class="info-value-select"
-                onchange="updateCommand()"
-              >
+              <select id="videoPreset" class="info-value-select">
                 <option value="p4">P4 (Default: better compression)</option>
                 <option value="p1">
                   P1 (Fast: higher speed, larger files)
@@ -124,11 +161,7 @@
             </div>
             <div class="info-row">
               <span class="info-label">Format</span>
-              <select
-                id="outputFormat"
-                class="info-value-select"
-                onchange="updateCommand()"
-              >
+              <select id="outputFormat" class="info-value-select">
                 <option value="mkv">Matroska (MKV)</option>
                 <option value="mp4">MPEG-4 (MP4)</option>
                 <option value="webm">WebM (VP9)</option>
@@ -136,6 +169,33 @@
               </select>
             </div>
           </div>
+        </section>
+
+        <section class="panel output-panel">
+          <div class="panel-header"><h2>Output and sample</h2></div>
+          <p class="config-note">
+            Name collisions receive a numbered filename automatically.
+          </p>
+          <div class="output-folder-row">
+            <span id="outputDirectoryLabel" class="info-value"
+              >Same folder as source</span
+            ><button id="chooseOutputFolderBtn" class="btn-secondary">
+              Choose folder
+            </button>
+          </div>
+          <div class="sample-controls">
+            <label for="sampleStart">Sample start (seconds)</label
+            ><input
+              id="sampleStart"
+              type="number"
+              min="0"
+              step="1"
+              value="0"
+            /><button id="sampleBtn" class="btn-secondary">
+              Encode 30-second sample
+            </button>
+          </div>
+          <p id="sampleResult" class="sample-result hidden"></p>
         </section>
 
         <!-- Audio Tracks -->
@@ -151,7 +211,16 @@
         <section id="subtitleSection" class="panel hidden">
           <div class="panel-header">
             <h2>Subtitle Tracks</h2>
-            <span id="subtitleCount" class="track-count"></span>
+            <div class="track-header-actions">
+              <span id="subtitleCount" class="track-count"></span
+              ><button
+                type="button"
+                class="btn-text"
+                data-action="clear-subtitle-default"
+              >
+                No default
+              </button>
+            </div>
           </div>
           <div id="subtitleTracks" class="tracks-list"></div>
         </section>
@@ -173,6 +242,19 @@
           <div class="panel-header">
             <h2>Command</h2>
           </div>
+          <div id="customCommandBanner" class="custom-command-banner hidden">
+            <span
+              >This command was edited manually. Settings changes will not
+              replace it.</span
+            ><button
+              id="regenerateCommandBtn"
+              type="button"
+              class="btn-secondary"
+              data-action="regenerate-command"
+            >
+              Regenerate command
+            </button>
+          </div>
           <code
             id="commandPreview"
             class="command-preview"
@@ -186,11 +268,15 @@
           Editing queued job - changes will update the existing queue entry.
         </div>
         <div class="encode-actions">
-          <button id="encodeNowBtn" class="btn-primary">Encode Now</button>
           <button id="addToQueueBtn" class="btn-secondary btn-wide">
             Add to Queue
           </button>
         </div>
+        <div
+          id="compatibilityIssues"
+          class="compatibility-issues"
+          aria-live="polite"
+        ></div>
       </div>
 
       <!-- Progress View -->
@@ -259,6 +345,9 @@
           <button id="encodeAnotherBtn" class="btn-secondary">
             Encode Another
           </button>
+          <button id="openOutputFolderBtn" class="btn-secondary">
+            Open output
+          </button>
         </section>
       </div>
 
@@ -275,6 +364,12 @@
           </button>
           <button id="clearFinishedBtn" class="btn-secondary hidden">
             Clear Finished
+          </button>
+          <button id="cancelCurrentBtn" class="btn-secondary hidden">
+            Cancel current
+          </button>
+          <button id="stopAfterCurrentBtn" class="btn-secondary hidden">
+            Stop after current
           </button>
         </div>
       </section>
@@ -302,91 +397,383 @@
               </svg>
             </button>
           </div>
+          <nav class="settings-tabs" aria-label="Settings sections">
+            <button
+              type="button"
+              class="settings-tab active"
+              data-settings-tab="video"
+            >
+              Video &amp; Output
+            </button>
+            <button
+              type="button"
+              class="settings-tab"
+              data-settings-tab="audio"
+            >
+              Audio
+            </button>
+            <button
+              type="button"
+              class="settings-tab"
+              data-settings-tab="subtitles"
+            >
+              Subtitles
+            </button>
+            <button
+              type="button"
+              class="settings-tab"
+              data-settings-tab="naming"
+            >
+              Naming
+            </button>
+            <button
+              type="button"
+              class="settings-tab"
+              data-settings-tab="tools"
+            >
+              Tools
+            </button>
+          </nav>
           <div class="settings-modal-body">
-            <!-- Language Preferences -->
-            <section class="settings-section">
-              <h3>Language Preferences</h3>
-              <div class="config-note">
-                Comma-separated language codes (e.g.
-                <strong>eng, jpn, und</strong>). Leave blank to select all
-                tracks.
+            <section class="settings-page" data-settings-page="video">
+              <p class="config-note">
+                Defaults are used when opening future files. Current jobs keep
+                their saved settings.
+              </p>
+              <div class="settings-grid">
+                <label class="setting-field"
+                  >Encoder family<select
+                    id="defaultEncoderFamily"
+                    class="info-value-select"
+                  >
+                    <option value="auto">Automatic</option>
+                    <option value="software">Software (CPU)</option>
+                    <option value="nvenc">NVIDIA NVENC</option>
+                    <option value="amf">AMD AMF</option>
+                    <option value="qsv">Intel Quick Sync</option>
+                    <option value="videotoolbox">Apple VideoToolbox</option>
+                  </select></label
+                >
+                <label class="setting-field"
+                  >Video codec<select
+                    id="defaultVideoCodec"
+                    class="info-value-select"
+                  >
+                    <option value="hevc">HEVC (H.265)</option>
+                    <option value="h264">H.264 (AVC)</option>
+                    <option value="vp9">VP9</option>
+                    <option value="av1">AV1</option>
+                  </select></label
+                >
+                <label class="setting-field"
+                  >Quality<input
+                    id="defaultVideoQuality"
+                    class="path-input"
+                    type="number"
+                    min="0"
+                    max="63"
+                /></label>
+                <label class="setting-field"
+                  >Preset<select
+                    id="defaultVideoPreset"
+                    class="info-value-select"
+                  >
+                    <option value="auto">Automatic</option>
+                  </select></label
+                >
+                <label class="setting-field"
+                  >Output format<select
+                    id="defaultOutputFormat"
+                    class="info-value-select"
+                  >
+                    <option value="mkv">Matroska (MKV)</option>
+                    <option value="mp4">MPEG-4 (MP4)</option>
+                    <option value="webm">WebM</option>
+                    <option value="mov">MOV</option>
+                  </select></label
+                >
+                <label class="setting-field"
+                  >Output directory<input
+                    id="defaultOutputDirectory"
+                    class="path-input"
+                    type="text"
+                    placeholder="Same folder as source"
+                /></label>
               </div>
-              <div class="info-grid">
-                <div class="info-row config-row">
-                  <span class="info-label">Audio languages</span>
-                  <input
+            </section>
+            <section class="settings-page hidden" data-settings-page="audio">
+              <p class="config-note">
+                Choose which languages are included and how the default audio
+                track is selected.
+              </p>
+              <p class="config-note">
+                Stereo re-encodes with the selected stereo codec and bitrate,
+                even when the source conversion default is Copy.
+              </p>
+              <div class="settings-grid">
+                <label class="setting-field setting-field-wide"
+                  >Included languages<input
                     id="preferredAudioLangs"
                     class="path-input"
                     type="text"
+                    placeholder="Leave blank to include all"
+                /></label>
+                <label class="setting-field"
+                  >Default track<select
+                    id="audioDefaultPolicy"
+                    class="info-value-select"
+                  >
+                    <option value="language">Preferred language</option>
+                    <option value="source">Source default</option>
+                  </select></label
+                >
+                <label class="setting-field setting-field-wide"
+                  >Preferred default languages<input
+                    id="defaultAudioLangs"
+                    class="path-input"
+                    type="text"
                     placeholder="e.g. eng, jpn"
-                  />
-                </div>
-                <div class="info-row config-row">
-                  <span class="info-label">Subtitle languages</span>
-                  <input
+                /></label>
+                <label class="setting-field"
+                  >Default conversion<select
+                    id="defaultAudioAction"
+                    class="info-value-select"
+                  >
+                    <option value="copy">Copy source</option>
+                    <option value="aac">AAC</option>
+                    <option value="opus">Opus</option>
+                    <option value="ac3">AC3</option>
+                  </select></label
+                >
+                <label class="setting-field"
+                  >Conversion bitrate (kbps)<input
+                    id="audioBitrate"
+                    class="path-input"
+                    type="number"
+                    min="32"
+                    max="1536"
+                    step="8"
+                /></label>
+                <label class="setting-field"
+                  >Default channels<select
+                    id="defaultChannelsMode"
+                    class="info-value-select"
+                  >
+                    <option value="preserve">Preserve channels</option>
+                    <option value="stereo">Stereo</option>
+                  </select></label
+                >
+                <label class="setting-field"
+                  >Stereo codec<select
+                    id="stereoCodec"
+                    class="info-value-select"
+                  >
+                    <option value="aac">AAC</option>
+                    <option value="opus">Opus</option>
+                    <option value="ac3">AC3</option>
+                  </select></label
+                >
+                <label class="setting-field"
+                  >Stereo bitrate (kbps)<input
+                    id="stereoBitrate"
+                    class="path-input"
+                    type="number"
+                    min="32"
+                    max="1536"
+                    step="8"
+                /></label>
+              </div>
+            </section>
+            <section
+              class="settings-page hidden"
+              data-settings-page="subtitles"
+            >
+              <p class="config-note">
+                Subtitle language inclusion is independent of which track is
+                marked default.
+              </p>
+              <div class="settings-grid">
+                <label class="setting-field setting-field-wide"
+                  >Included languages<input
                     id="preferredSubLangs"
                     class="path-input"
                     type="text"
+                    placeholder="Leave blank to include all"
+                /></label>
+                <label class="setting-field"
+                  >Default track<select
+                    id="subtitleDefaultPolicy"
+                    class="info-value-select"
+                  >
+                    <option value="language">Preferred language</option>
+                    <option value="source">Source default</option>
+                    <option value="none">No default</option>
+                  </select></label
+                >
+                <label class="setting-field setting-field-wide"
+                  >Preferred default languages<input
+                    id="defaultSubLangs"
+                    class="path-input"
+                    type="text"
                     placeholder="e.g. eng"
-                  />
-                </div>
+                /></label>
+                <label class="setting-field"
+                  >Default conversion<select
+                    id="subtitleAction"
+                    class="info-value-select"
+                  >
+                    <option value="copy">Copy source</option>
+                    <option value="srt">SRT</option>
+                    <option value="ass">ASS</option>
+                    <option value="mov_text">MOV text</option>
+                    <option value="webvtt">WebVTT</option>
+                  </select></label
+                >
               </div>
             </section>
-
-            <!-- Debug -->
-            <section class="settings-section">
-              <h3>Debug</h3>
-              <div class="info-grid">
+            <section class="settings-page hidden" data-settings-page="naming">
+              <p class="config-note">
+                Use tokens to set titles for new files. Empty templates preserve
+                source titles. Choose Clear to remove a title. Manual per-file
+                edits always take precedence.
+              </p>
+              <div class="template-help">
+                <code>{source_name}</code><code>{original_title}</code
+                ><code>{language}</code><code>{codec}</code
+                ><code>{channels}</code><code>{track_number}</code>
+              </div>
+              <div class="settings-grid template-grid">
+                <label class="setting-field"
+                  >Movie title template<input
+                    id="templateMovie"
+                    class="path-input"
+                    type="text"
+                    placeholder="Empty keeps source title"
+                /></label>
+                <label class="setting-field setting-check-field"
+                  ><span>Clear movie title</span><input
+                    id="clearMovieName"
+                    type="checkbox"
+                /></label>
+                <label class="setting-field"
+                  >Video stream title<input
+                    id="templateVideo"
+                    class="path-input"
+                    type="text"
+                    placeholder="Empty keeps source title"
+                /></label>
+                <label class="setting-field setting-check-field"
+                  ><span>Clear video stream title</span><input
+                    id="clearVideoName"
+                    type="checkbox"
+                /></label>
+                <label class="setting-field"
+                  >Audio title template<input
+                    id="templateAudio"
+                    class="path-input"
+                    type="text"
+                    placeholder="Empty keeps source title"
+                /></label>
+                <label class="setting-field setting-check-field"
+                  ><span>Clear audio track titles</span><input
+                    id="clearAudioNames"
+                    type="checkbox"
+                /></label>
+                <label class="setting-field"
+                  >Subtitle title template<input
+                    id="templateSubtitle"
+                    class="path-input"
+                    type="text"
+                    placeholder="Empty keeps source title"
+                /></label>
+                <label class="setting-field setting-check-field"
+                  ><span>Clear subtitle track titles</span><input
+                    id="clearSubtitleNames"
+                    type="checkbox"
+                /></label>
+              </div>
+              <p
+                id="templatePreview"
+                class="template-preview"
+                aria-live="polite"
+              ></p>
+            </section>
+            <section class="settings-page hidden" data-settings-page="tools">
+              <div class="settings-section">
+                <h3>Binary paths</h3>
+                <p class="config-note">
+                  Leave blank to use the system PATH. Set full executable paths
+                  to override.
+                </p>
+                <div
+                  id="envOverrideStatus"
+                  class="env-override-status hidden"
+                ></div>
+                <div class="settings-grid">
+                  <label class="setting-field setting-field-wide"
+                    >ffmpeg path<input
+                      id="ffmpegPathInput"
+                      class="path-input"
+                      type="text"
+                      placeholder="C:\\ffmpeg\\bin\\ffmpeg.exe"
+                  /></label>
+                  <label class="setting-field setting-field-wide"
+                    >ffprobe path<input
+                      id="ffprobePathInput"
+                      class="path-input"
+                      type="text"
+                      placeholder="C:\\ffmpeg\\bin\\ffprobe.exe"
+                  /></label>
+                </div>
+                <div id="binaryCheckResult" class="binary-check-result"></div>
+                <div class="config-actions">
+                  <button id="checkBinaryConfigBtn" class="btn-secondary">
+                    Check paths
+                  </button>
+                </div>
+              </div>
+              <div class="settings-section">
+                <h3>Diagnostics</h3>
                 <div class="info-row">
                   <span class="info-label"
-                    >Show ffmpeg output during encoding</span
-                  >
-                  <label class="toggle-switch">
-                    <input type="checkbox" id="debugModeToggle" />
-                    <span class="toggle-slider"></span>
-                  </label>
+                    >Show FFmpeg output during encoding</span
+                  ><label class="toggle-switch"
+                    ><input type="checkbox" id="debugModeToggle" /><span
+                      class="toggle-slider"
+                    ></span
+                  ></label>
                 </div>
               </div>
             </section>
-
-            <!-- Binary Configuration -->
-            <section class="settings-section">
-              <h3>Binary Paths</h3>
-              <div class="config-note">
-                Leave blank to use system PATH. Set full executable paths to
-                override.
-              </div>
-              <div
-                id="envOverrideStatus"
-                class="env-override-status hidden"
-              ></div>
-              <div class="info-grid">
-                <div class="info-row config-row">
-                  <span class="info-label">ffmpeg path</span>
-                  <input
-                    id="ffmpegPathInput"
-                    class="path-input"
-                    type="text"
-                    placeholder="Example: C:\\ffmpeg\\bin\\ffmpeg.exe"
-                  />
-                </div>
-                <div class="info-row config-row">
-                  <span class="info-label">ffprobe path</span>
-                  <input
-                    id="ffprobePathInput"
-                    class="path-input"
-                    type="text"
-                    placeholder="Example: C:\\ffmpeg\\bin\\ffprobe.exe"
-                  />
-                </div>
-              </div>
-              <div id="binaryCheckResult" class="binary-check-result"></div>
-              <div class="config-actions">
-                <button id="checkBinaryConfigBtn" class="btn-secondary">
-                  Check Paths
-                </button>
-              </div>
-            </section>
+          </div>
+          <div class="settings-modal-footer">
+            <p
+              id="settingsError"
+              class="settings-error hidden"
+              aria-live="polite"
+            ></p>
+            <button id="applyDefaultsBtn" type="button" class="btn-text">
+              Apply saved defaults to this file
+            </button>
+            <div class="settings-footer-actions">
+              <button id="resetSettingsBtn" type="button" class="btn-text">
+                Reset to defaults
+              </button>
+              <button
+                id="cancelSettingsBtn"
+                type="button"
+                class="btn-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                id="saveSettingsBtn"
+                type="button"
+                class="btn-primary settings-save-btn"
+              >
+                Save settings
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -402,6 +789,8 @@
       </p>
     </footer>
 
+    <script src="encoding-core.js"></script>
+    <script src="settings-core.js"></script>
     <script src="renderer.js"></script>
   </body>
 </html>

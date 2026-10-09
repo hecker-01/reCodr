@@ -1,293 +1,62 @@
-const { ipcRenderer, shell } = require("electron");
-const path = require("path");
-const fs = require("fs");
-
-// State
-let currentFile = null;
-let metadata = null;
-let audioTracks = [];
-let subtitleTracks = [];
-let attachmentTracks = [];
-let outputFormat = "mkv";
-let videoCodec = "libx265";
-let videoQuality = "22";
-let videoPreset = "medium";
-let encodeStartTime = null;
-let commandModified = false;
-let preferredAudioLangs = [];
-let preferredSubLangs = [];
-let debugMode = false;
-let tipInterval = null;
+/* Renderer stays sandboxed: all privileged work is routed through preload. */
+const bridge = window.recodr;
+const core = window.ReCodrCore;
+const settingsCore = window.ReCodrSettings;
+const $ = (id) => document.getElementById(id);
+const ui = {
+  drop: $("dropZone"),
+  settings: $("settingsView"),
+  progress: $("progressView"),
+  completion: $("completionView"),
+  queuePanel: $("queuePanel"),
+  queueList: $("queueList"),
+  audio: $("audioTracks"),
+  subtitles: $("subtitleTracks"),
+  attachments: $("attachmentTracks"),
+  preview: $("commandPreview"),
+  notices: $("noticeArea"),
+  fileInfo: $("fileInfo"),
+};
+let currentFile = null,
+  metadata = null,
+  audioTracks = [],
+  subtitleTracks = [],
+  attachmentTracks = [];
+let queue = [],
+  queueProcessing = false,
+  stopAfterCurrent = false,
+  currentJobId = null;
+let outputDirectory = "",
+  editingJobId = null,
+  commandModified = false,
+  sampleRunning = false,
+  lastCompletedOutputFolder = null;
 let availableEncoders = {
-  available: [],
+  available: ["software"],
   encoders: {},
   recommended: "software",
 };
-let selectedEncoderFamily = "software";
-
-// Queue state
-let queue = [];
-let queueProcessing = false;
-let singleEncodeMode = false;
-let editingJobId = null;
-let currentJobId = null;
-let currentJobProgress = null;
-
-// Batch drop state
-let pendingFiles = [];
-let pendingFileIndex = 0;
-
-// DOM Elements
-const dropZone = document.getElementById("dropZone");
-const fileInput = document.getElementById("fileInput");
-const settingsView = document.getElementById("settingsView");
-const progressView = document.getElementById("progressView");
-const completionView = document.getElementById("completionView");
-const fileInfo = document.getElementById("fileInfo");
-const audioSection = document.getElementById("audioSection");
-const subtitleSection = document.getElementById("subtitleSection");
-const attachmentSection = document.getElementById("attachmentSection");
-const audioTracksEl = document.getElementById("audioTracks");
-const subtitleTracksEl = document.getElementById("subtitleTracks");
-const attachmentTracksEl = document.getElementById("attachmentTracks");
-const commandPreview = document.getElementById("commandPreview");
-const encodeNowBtn = document.getElementById("encodeNowBtn");
-const addToQueueBtn = document.getElementById("addToQueueBtn");
-const editingBanner = document.getElementById("editingBanner");
-const queuePanel = document.getElementById("queuePanel");
-const queueList = document.getElementById("queueList");
-const queueStatus = document.getElementById("queueStatus");
-const queueActions = document.getElementById("queueActions");
-const startQueueBtn = document.getElementById("startQueueBtn");
-const clearFinishedBtn = document.getElementById("clearFinishedBtn");
-const changeFileBtn = document.getElementById("changeFileBtn");
-const encodeAnotherBtn = document.getElementById("encodeAnotherBtn");
-const outputFormatSelect = document.getElementById("outputFormat");
-const videoCodecSelect = document.getElementById("videoCodec");
-const videoQualitySelect = document.getElementById("videoQuality");
-const videoPresetSelect = document.getElementById("videoPreset");
-const openSettingsBtn = document.getElementById("openSettingsBtn");
-const encoderSelect = document.getElementById("encoderSelect");
-const settingsOverlay = document.getElementById("settingsOverlay");
-const ffmpegPathInput = document.getElementById("ffmpegPathInput");
-const ffprobePathInput = document.getElementById("ffprobePathInput");
-const envOverrideStatus = document.getElementById("envOverrideStatus");
-const binaryCheckResult = document.getElementById("binaryCheckResult");
-const checkBinaryConfigBtn = document.getElementById("checkBinaryConfigBtn");
-const closeSettingsBtn = document.getElementById("closeSettingsBtn");
-const preferredAudioLangsInput = document.getElementById("preferredAudioLangs");
-const preferredSubLangsInput = document.getElementById("preferredSubLangs");
-const debugModeToggle = document.getElementById("debugModeToggle");
-const debugLogSection = document.getElementById("debugLogSection");
-const debugLog = document.getElementById("debugLog");
-const clearDebugLogBtn = document.getElementById("clearDebugLog");
-const tipText = document.getElementById("tipText");
-
-// Tips
-const tips = [
-  'Did you know <strong>heckr.dev</strong> has a lot more tools which are all free to use? Visit <a href="https://tools.heckr.dev">tools.heckr.dev</a> to find out more!',
-  "FFmpeg was started in 2000 by <strong>Fabrice Bellard</strong>, who also created QEMU and the fastest known algorithm for computing pi.",
-  'The "FF" in FFmpeg originally stood for <strong>"Fast Forward"</strong>.',
-  "FFmpeg supports over <strong>100 codecs</strong> and hundreds of container formats out of the box.",
-  "The <strong>H.264</strong> codec is used by over 90% of all video on the internet.",
-  "Hardware encoding with <strong>NVENC</strong> can be up to 10x faster than software encoding, but produces slightly larger files at the same visual quality.",
-  "The <strong>MKV</strong> (Matroska) container format can hold virtually unlimited audio, video, and subtitle tracks in a single file.",
-  "A typical Blu-ray movie is around <strong>25-50 GB</strong>, but can be re-encoded to under 5 GB with minimal visual loss using HEVC.",
-  "FFmpeg can process over <strong>450 different pixel formats</strong> - far more than any human eye could distinguish.",
-  "The <strong>CRF</strong> (Constant Rate Factor) scale is logarithmic: CRF 18 produces roughly twice the file size of CRF 24 at the same resolution.",
-  "<strong>HEVC (H.265)</strong> can achieve the same quality as H.264 at roughly 50% of the file size, at the cost of slower encoding.",
-  "FFmpeg is used behind the scenes by <strong>YouTube, Netflix, VLC, and OBS</strong> - among many others.",
-  "The <strong>Opus</strong> audio codec, often used with WebM, was designed to handle everything from voice to music and beats most codecs at low bitrates.",
-  "Subtitles come in two flavors: <strong>text-based</strong> (SRT, ASS) which are tiny, and <strong>image-based</strong> (PGS, VobSub) which can be several MB.",
-  "Re-encoding audio from lossy to lossy (e.g., AAC \u2192 MP3) is called <strong>transcoding</strong> and always loses some quality - copying the stream avoids this.",
-  "The <strong>-preset</strong> flag doesn't change quality - it trades encoding speed for file size. Slower presets produce smaller files at the same quality.",
-];
-
-function showRandomTip() {
-  if (tips.length === 0) return;
-  tipText.style.opacity = "0";
-  setTimeout(() => {
-    tipText.innerHTML = tips[Math.floor(Math.random() * tips.length)];
-    tipText.style.opacity = "1";
-  }, 400);
-}
-
-function startTipCycle() {
-  stopTipCycle();
-  showRandomTip();
-  tipInterval = setInterval(showRandomTip, 15000);
-}
-
-function stopTipCycle() {
-  if (tipInterval) {
-    clearInterval(tipInterval);
-    tipInterval = null;
-  }
-}
-
-function updateTipVisibility() {
-  const encoding = !progressView.classList.contains("hidden");
-  if (encoding && !debugMode) {
-    tipText.classList.remove("hidden");
-    startTipCycle();
-  } else {
-    tipText.classList.add("hidden");
-    stopTipCycle();
-  }
-}
-
-// Open tip links in external browser
-tipText.addEventListener("click", (e) => {
-  if (e.target.tagName === "A" && e.target.href) {
-    e.preventDefault();
-    shell.openExternal(e.target.href);
-  }
-});
-
-// Event Listeners
-dropZone.addEventListener("click", () => fileInput.click());
-dropZone.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  dropZone.classList.add("drag-over");
-});
-dropZone.addEventListener("dragleave", (e) => {
-  e.preventDefault();
-  dropZone.classList.remove("drag-over");
-});
-dropZone.addEventListener("drop", (e) => {
-  e.preventDefault();
-  dropZone.classList.remove("drag-over");
-  const files = Array.from(e.dataTransfer.files).map(f => f.path).filter(Boolean);
-  if (files.length === 0) return;
-  pendingFiles = files;
-  pendingFileIndex = 0;
-  processFile(pendingFiles[0]);
-});
-fileInput.addEventListener("change", (e) => {
-  const files = Array.from(e.target.files).map(f => f.path).filter(Boolean);
-  if (files.length === 0) return;
-  pendingFiles = files;
-  pendingFileIndex = 0;
-  processFile(pendingFiles[0]);
-});
-changeFileBtn.addEventListener("click", () => {
-  if (!checkCommandModification()) return;
-  resetCurrentFileState();
-  showOnlyView("drop");
-  renderQueue();
-});
-encodeAnotherBtn.addEventListener("click", () => {
-  resetCurrentFileState();
-  showOnlyView("drop");
-  renderQueue();
-});
-openSettingsBtn.addEventListener("click", openSettings);
-closeSettingsBtn.addEventListener("click", closeSettings);
-checkBinaryConfigBtn.addEventListener("click", checkBinaryConfig);
-settingsOverlay.addEventListener("click", (e) => {
-  if (e.target === settingsOverlay) closeSettings();
-});
-
-// Auto-save settings on change
-let settingsSaveTimer = null;
-function scheduleSettingsSave() {
-  if (settingsSaveTimer) clearTimeout(settingsSaveTimer);
-  settingsSaveTimer = setTimeout(autoSaveSettings, 500);
-}
-preferredAudioLangsInput.addEventListener("input", scheduleSettingsSave);
-preferredSubLangsInput.addEventListener("input", scheduleSettingsSave);
-ffmpegPathInput.addEventListener("input", scheduleSettingsSave);
-ffprobePathInput.addEventListener("input", scheduleSettingsSave);
-debugModeToggle.addEventListener("change", () => {
-  debugMode = debugModeToggle.checked;
-  if (!progressView.classList.contains("hidden")) {
-    debugLogSection.classList.toggle("hidden", !debugMode);
-    updateTipVisibility();
-  }
-  scheduleSettingsSave();
-});
-clearDebugLogBtn.addEventListener("click", () => {
-  debugLog.textContent = "";
-});
-outputFormatSelect.addEventListener("change", (e) => {
-  if (!checkCommandModification()) return;
-  outputFormat = e.target.value;
-  updateCommand();
-});
-videoCodecSelect.addEventListener("change", (e) => {
-  if (!checkCommandModification()) return;
-  videoCodec = e.target.value;
-  updateQualityAndPresetOptions();
-  updateFormatOptions();
-  updateCommand();
-});
-videoQualitySelect.addEventListener("change", (e) => {
-  if (!checkCommandModification()) return;
-  videoQuality = e.target.value;
-  updateCommand();
-});
-videoPresetSelect.addEventListener("change", (e) => {
-  if (!checkCommandModification()) return;
-  videoPreset = e.target.value;
-  updateCommand();
-});
-
-// Track command modifications
-commandPreview.addEventListener("input", () => {
-  commandModified = true;
-});
-encodeNowBtn.addEventListener("click", () => encodeNow());
-addToQueueBtn.addEventListener("click", () => addToQueueAction());
-startQueueBtn.addEventListener("click", () => startQueue());
-clearFinishedBtn.addEventListener("click", () => clearFinishedJobs());
-
-// Encoder change listener
-encoderSelect.addEventListener("change", (e) => {
-  if (!checkCommandModification()) return;
-  selectedEncoderFamily = e.target.value;
-  updateCodecOptions();
-  updateQualityAndPresetOptions();
-  updateFormatOptions();
-  updateCommand();
-});
-
-loadSettings();
-detectEncoders();
-
-// Helper to check if command was modified and warn user
-function checkCommandModification() {
-  if (commandModified) {
-    const confirmed = confirm(
-      "This will undo your changes to the command. Are you sure?",
-    );
-    if (!confirmed) return false;
-    commandModified = false;
-  }
-  return true;
-}
-
-// Encoder detection
-async function detectEncoders() {
-  try {
-    availableEncoders = await ipcRenderer.invoke("detect-encoders");
-    selectedEncoderFamily = availableEncoders.recommended || "software";
-    updateEncoderSelect();
-    updateCodecOptions();
-  } catch (error) {
-    console.error("Failed to detect encoders:", error);
-    availableEncoders = {
-      available: ["software"],
-      encoders: { software: ["libx265", "libx264"] },
-      recommended: "software",
-    };
-    selectedEncoderFamily = "software";
-    updateEncoderSelect();
-    updateCodecOptions();
-  }
-}
-
-// Encoder family display labels
-const encoderLabels = {
+let prefs = {
+  audioLangs: [],
+  subLangs: [],
+  defaultAudioAction: "copy",
+  defaultChannelsMode: "preserve",
+  debugMode: false,
+};
+let savedSettings = settingsCore?.normalizeSettings() || null;
+let fileSettings = null;
+let settingsDraft = null;
+let settingsOpen = false;
+let currentTitles = {};
+let subtitleDefaultTouched = false;
+let autoEncoder = true;
+let lastControlValues = {};
+let debugLines = [],
+  persistTimer = null,
+  queuePaused = true,
+  pendingFiles = [];
+const MAX_LOG_LINES = 500;
+const labels = {
   nvenc: "NVIDIA NVENC",
   amf: "AMD AMF",
   qsv: "Intel Quick Sync",
@@ -295,1529 +64,2063 @@ const encoderLabels = {
   software: "Software (CPU)",
 };
 
-// Update encoder dropdown
-function updateEncoderSelect() {
-  const encoders = availableEncoders.available || ["software"];
-
-  encoderSelect.innerHTML = encoders
-    .map((enc) => {
-      const label = encoderLabels[enc] || enc;
-      return `<option value="${enc}" ${selectedEncoderFamily === enc ? "selected" : ""}>${label}</option>`;
-    })
-    .join("");
+function escapeHtml(value) {
+  return String(value ?? "").replace(
+    /[&<>"']/g,
+    (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        c
+      ],
+  );
+}
+function basename(value) {
+  return (
+    String(value || "")
+      .split(/[\\/]/)
+      .pop() || "(unknown)"
+  );
+}
+function dirname(value) {
+  const text = String(value || "");
+  const i = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+  return i < 0
+    ? "."
+    : i === 0
+      ? text.slice(0, 1)
+      : i === 2 && /^[a-z]:/i.test(text)
+        ? text.slice(0, 3)
+        : text.slice(0, i);
+}
+function formatDuration(value) {
+  const s = Math.max(0, Math.floor(Number(value) || 0));
+  return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
+function notify(message, type = "info") {
+  const row = document.createElement("div");
+  row.className = `notice notice-${type}`;
+  row.textContent = String(message);
+  ui.notices.prepend(row);
+  while (ui.notices.children.length > 5) ui.notices.lastChild.remove();
+}
+function setView(name) {
+  for (const [key, el] of Object.entries({
+    drop: ui.drop,
+    settings: ui.settings,
+    progress: ui.progress,
+    completion: ui.completion,
+  }))
+    el.classList.toggle("hidden", key !== name);
+  renderQueue();
+}
+function supportedInput(path) {
+  return /\.(mkv|avi|mov|mp4|webm|flv|wmv|m4v|ts|mts|m2ts|mpg|mpeg|ogv)$/i.test(
+    path,
+  );
 }
 
-function updateBatchBanner() {
-  const batchBanner = document.getElementById("batchBanner");
-  if (!batchBanner) return;
-  const isBatch = pendingFiles.length > 1;
-  batchBanner.classList.toggle("hidden", !isBatch);
-  if (isBatch) {
-    const remaining = pendingFiles.length - pendingFileIndex - 1;
-    batchBanner.textContent = `File ${pendingFileIndex + 1} of ${pendingFiles.length}`;
-    if (addToQueueBtn) {
-      addToQueueBtn.textContent = remaining > 0
-        ? `Add to Queue & Next (${remaining} remaining)`
-        : "Add to Queue";
-    }
-    if (encodeNowBtn) {
-      encodeNowBtn.classList.toggle("hidden", remaining > 0 || queueProcessing);
-    }
-  } else {
-    if (addToQueueBtn) addToQueueBtn.textContent = "Add to Queue";
-    if (encodeNowBtn) encodeNowBtn.classList.toggle("hidden", queueProcessing);
-  }
-}
-
-function advancePendingFiles() {
-  pendingFileIndex++;
-  if (pendingFileIndex < pendingFiles.length) {
-    processFile(pendingFiles[pendingFileIndex]);
-  } else {
-    pendingFiles = [];
-    pendingFileIndex = 0;
-    resetCurrentFileState();
-    showOnlyView("drop");
-    renderQueue();
-  }
-}
-
-// Process file
-async function processFile(filePath) {
-  console.log("Processing file:", filePath);
-  currentFile = filePath;
-
+async function chooseFiles() {
   try {
-    console.log("Calling get-video-info...");
-    metadata = await ipcRenderer.invoke("get-video-info", filePath);
-    console.log("Got metadata:", metadata);
+    const paths = await bridge.invoke("select-input-files");
+    if (paths?.length) await acceptFiles(paths);
+  } catch (e) {
+    notify(e.message, "error");
+  }
+}
+async function acceptFiles(paths) {
+  const valid = (paths || []).filter(
+    (p) => typeof p === "string" && supportedInput(p),
+  );
+  if (!valid.length) return notify("Choose a supported video file.", "error");
+  pendingFiles = valid.slice(1);
+  updateBatchBanner(valid.length);
+  await openFile(valid[0]);
+}
+function updateBatchBanner(
+  total = pendingFiles.length + (currentFile ? 1 : 0),
+) {
+  const banner = $("batchBanner");
+  if (!banner) return;
+  banner.classList.toggle("hidden", total < 2);
+  banner.textContent =
+    total > 1
+      ? `Batch: ${pendingFiles.length + 1} file(s) remain. Add this file to continue.`
+      : "";
+}
+function titleConfigFor(category, settings = fileSettings || savedSettings) {
+  const naming = settings?.naming || {};
+  if (naming.clearNames?.includes(category)) return { mode: "clear", value: "" };
+  return naming[category]
+    ? { mode: "template", value: naming[category] }
+    : { mode: "preserve", value: "" };
+}
+async function openFile(file) {
+  commandModified = false;
+  currentTitles = {};
+  subtitleDefaultTouched = false;
+  fileSettings = structuredClone(
+    savedSettings || settingsCore.DEFAULT_SETTINGS,
+  );
+  for (const notice of [...ui.notices.children]) {
+    if (
+      /^(Embedded subtitle fonts are preserved|Stereo conversion uses )/.test(
+        notice.textContent || "",
+      )
+    )
+      notice.remove();
+  }
+  currentFile = file;
+  updateBatchBanner();
+  try {
+    metadata = await bridge.invoke("get-video-info", file);
     displayFileInfo();
-    displayAudioTracks();
-    displaySubtitleTracks();
-    displayAttachmentTracks();
-    updateQualityAndPresetOptions();
+    displayTracks();
+    loadControlsFromMetadata();
     updateCommand();
-
-    dropZone.classList.add("hidden");
-    settingsView.classList.remove("hidden");
-    updateBatchBanner();
-  } catch (error) {
-    console.error("Error processing file:", error);
-    alert("Error reading video file: " + error.message);
+    setView("settings");
+  } catch (e) {
     currentFile = null;
+    notify(`Could not read ${basename(file)}: ${e.message}`, "error");
   }
 }
-
-// Display file info
+function processFile(filePath) {
+  return openFile(filePath);
+}
 function displayFileInfo() {
-  const format = metadata.format;
-  const video = metadata.streams.find((s) => s.codec_type === "video" && !s.disposition?.attached_pic);
-
-  const size = (parseInt(format.size) / (1024 * 1024)).toFixed(2) + " MB";
-  const duration = formatDuration(parseFloat(format.duration) || 0);
-  const resolution = video ? `${video.width}x${video.height}` : "N/A";
-  const codec = video ? video.codec_name.toUpperCase() : "N/A";
-  const bitrate = format.bit_rate
-    ? (parseInt(format.bit_rate) / 1000000).toFixed(2) + " Mbps"
-    : "N/A";
-
-  fileInfo.innerHTML = `
-    <div class="info-row"><span class="info-label">File</span><span class="info-value">${path.basename(currentFile)}</span></div>
-    <div class="info-row"><span class="info-label">Size</span><span class="info-value">${size}</span></div>
-    <div class="info-row"><span class="info-label">Duration</span><span class="info-value">${duration}</span></div>
-    <div class="info-row"><span class="info-label">Resolution</span><span class="info-value">${resolution}</span></div>
-    <div class="info-row"><span class="info-label">Video Codec</span><span class="info-value">${codec}</span></div>
-    <div class="info-row"><span class="info-label">Bitrate</span><span class="info-value">${bitrate}</span></div>
-  `;
-}
-
-function estimateTrackSizeMb(stream, durationSeconds) {
-  const bytesFromTags = parseFloat(stream?.tags?.NUMBER_OF_BYTES || "");
-  if (Number.isFinite(bytesFromTags) && bytesFromTags > 0) {
-    return bytesFromTags / (1024 * 1024);
-  }
-
-  const streamBitrate = parseFloat(stream?.bit_rate || "");
-  if (
-    Number.isFinite(streamBitrate) &&
-    streamBitrate > 0 &&
-    durationSeconds > 0
-  ) {
-    const bytes = (streamBitrate * durationSeconds) / 8;
-    return bytes / (1024 * 1024);
-  }
-
-  const tagBps = parseFloat(stream?.tags?.BPS || "");
-  if (Number.isFinite(tagBps) && tagBps > 0 && durationSeconds > 0) {
-    const bytes = (tagBps * durationSeconds) / 8;
-    return bytes / (1024 * 1024);
-  }
-
-  return null;
-}
-
-function formatTrackSizeLabel(sizeMb) {
-  if (!Number.isFinite(sizeMb) || sizeMb <= 0) {
-    return "Size N/A";
-  }
-
-  if (sizeMb >= 1024) {
-    return `${(sizeMb / 1024).toFixed(2)} GB`;
-  }
-
-  return `${sizeMb.toFixed(2)} MB`;
-}
-
-function parseFrameRate(rate) {
-  if (!rate || typeof rate !== "string") return 0;
-  const parts = rate.split("/");
-  if (parts.length !== 2) return 0;
-  const numerator = parseFloat(parts[0]);
-  const denominator = parseFloat(parts[1]);
-  if (
-    !Number.isFinite(numerator) ||
-    !Number.isFinite(denominator) ||
-    denominator <= 0
-  ) {
-    return 0;
-  }
-  return numerator / denominator;
-}
-
-function estimateTotalVideoFrames(videoMetadata) {
-  const videoStream = videoMetadata?.streams?.find(
+  const video = metadata?.streams?.find(
     (s) => s.codec_type === "video" && !s.disposition?.attached_pic,
   );
-  if (!videoStream) return 0;
-
-  const nbFrames = parseInt(videoStream.nb_frames || "", 10);
-  if (Number.isFinite(nbFrames) && nbFrames > 0) {
-    return nbFrames;
-  }
-
-  const durationSeconds = parseFloat(
-    videoMetadata?.format?.duration || videoStream.duration || "0",
+  const format = metadata?.format || {};
+  const rows = [
+    ["File", basename(currentFile)],
+    ["Size", `${(Number(format.size || 0) / 1048576).toFixed(2)} MB`],
+    ["Duration", formatDuration(format.duration)],
+    ["Resolution", video ? `${video.width} × ${video.height}` : "N/A"],
+    ["Video codec", video?.codec_name?.toUpperCase() || "N/A"],
+  ];
+  ui.fileInfo.replaceChildren(
+    ...rows.map(([label, value]) => {
+      const row = document.createElement("div");
+      row.className = "info-row";
+      const l = document.createElement("span");
+      l.className = "info-label";
+      l.textContent = label;
+      const v = document.createElement("span");
+      v.className = "info-value";
+      v.textContent = value;
+      row.append(l, v);
+      return row;
+    }),
   );
-  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
-    return 0;
-  }
-
-  const avgFps = parseFrameRate(videoStream.avg_frame_rate);
-  const fallbackFps = parseFrameRate(videoStream.r_frame_rate);
-  const fps = avgFps > 0 ? avgFps : fallbackFps;
-  if (!Number.isFinite(fps) || fps <= 0) {
-    return 0;
-  }
-
-  return Math.round(durationSeconds * fps);
 }
-
-function formatAttachmentSize(sizeBytes) {
-  if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) {
-    return "Unknown size";
-  }
-
-  if (sizeBytes >= 1024 * 1024) {
-    return `${(sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
-  } else if (sizeBytes >= 1024) {
-    return `${(sizeBytes / 1024).toFixed(1)} KB`;
-  }
-
-  return `${sizeBytes} bytes`;
+function trackSize(s, duration) {
+  const b = Number(s.tags?.NUMBER_OF_BYTES || 0),
+    rate = Number(s.bit_rate || s.tags?.BPS || 0);
+  return b > 0
+    ? `${(b / 1048576).toFixed(1)} MB`
+    : rate > 0 && duration > 0
+      ? `${((rate * duration) / 8 / 1048576).toFixed(1)} MB`
+      : "size unknown";
 }
-
-// Display audio tracks
-function displayAudioTracks() {
-  const streams = metadata.streams.filter((s) => s.codec_type === "audio");
-  const durationSeconds = parseFloat(metadata?.format?.duration || "0") || 0;
-
-  if (streams.length === 0) {
-    audioSection.classList.add("hidden");
-    audioTracks = [];
-    return;
-  }
-
-  audioSection.classList.remove("hidden");
-  audioTracks = streams.map((s) => {
-    // Set default action based on codec
-    let defaultAction = "copy";
-    const codec = s.codec_name?.toLowerCase();
-
-    // Default to AAC if not already AAC
-    if (codec && codec !== "aac") {
-      defaultAction = "aac";
-    }
-
-    const language = (s.tags?.language || "und").toUpperCase();
-    const enabled =
-      preferredAudioLangs.length === 0 ||
-      preferredAudioLangs.includes(language.toLowerCase());
-
-    return {
-      index: s.index,
-      enabled,
-      action: defaultAction,
-      title: s.tags?.title || "",
-      language,
-      codec: s.codec_name?.toUpperCase() || "Unknown",
-      channels: s.channels || "?",
-      currentSizeLabel: formatTrackSizeLabel(
-        estimateTrackSizeMb(s, durationSeconds),
+function displayTracks() {
+  const duration = Number(metadata?.format?.duration || 0);
+  const streams = metadata?.streams || [];
+  const audio = streams.filter((s) => s.codec_type === "audio");
+  const subs = streams.filter((s) => s.codec_type === "subtitle");
+  const fonts = streams.filter((s) => s.codec_type === "attachment");
+  const activeSettings = fileSettings || savedSettings;
+  const audioLanguages =
+    activeSettings?.audio?.includeLanguages || prefs.audioLangs || [];
+  const subtitleLanguages =
+    activeSettings?.subtitles?.includeLanguages || prefs.subLangs || [];
+  audioTracks = audio.map((stream, i) => ({
+    index: stream.index,
+    enabled:
+      !audioLanguages.length ||
+      audioLanguages.includes(
+        String(stream.tags?.language || "und").toLowerCase(),
       ),
-    };
+    action: activeSettings?.audio?.action || prefs.defaultAudioAction || "copy",
+    bitrate: activeSettings?.audio?.bitrate || 192,
+    channels: stream.channels || 2,
+    channelsMode:
+      activeSettings?.audio?.channelsMode ||
+      prefs.defaultChannelsMode ||
+      "preserve",
+    language: String(stream.tags?.language || "und").toLowerCase(),
+    codec: String(stream.codec_name || "unknown").toLowerCase(),
+    sourceTitle:
+      typeof stream.tags?.title === "string" ? stream.tags.title : "",
+    titleConfig: titleConfigFor("audio", activeSettings),
+    disposition: { ...(stream.disposition || {}) },
+    sourceDefault:
+      Number(stream.disposition?.default) === 1 ||
+      stream.disposition?.default === true,
+    isDefault: false,
+    size: trackSize(stream, duration),
+    metadata: { ...stream },
+  }));
+  audioTracks.forEach((track) => {
+    if (
+      track.enabled &&
+      track.channelsMode === "stereo" &&
+      track.action === "copy"
+    ) {
+      track.action = activeSettings.audio.stereoCodec;
+      track.bitrate = activeSettings.audio.stereoBitrate;
+    }
   });
-
-  renderAudioTracks();
-}
-
-function renderAudioTracks() {
-  const enabled = audioTracks.filter((t) => t.enabled).length;
-  document.getElementById("audioCount").textContent =
-    `${enabled}/${audioTracks.length}`;
-
-  audioTracksEl.innerHTML = audioTracks
-    .map(
-      (t, idx) => `
-    <div class="track-item track-toggle ${t.enabled ? "track-enabled" : "track-disabled"}" onclick="toggleAudio(${idx}, ${!t.enabled})" role="button" tabindex="0">
-      <input type="checkbox" ${t.enabled ? "checked" : ""} onclick="event.stopPropagation()" onchange="toggleAudio(${idx}, this.checked)">
-      <div class="track-info">
-        <span class="track-name">${t.title || "Track " + (idx + 1)}</span>
-        <span class="track-meta">${t.language} · ${t.codec} · ${t.channels}ch · ${t.currentSizeLabel}</span>
-      </div>
-      <select class="track-action" onclick="event.stopPropagation()" onchange="setAudioAction(${idx}, this.value)" ${!t.enabled ? "disabled" : ""}>
-        <option value="copy" ${t.action === "copy" ? "selected" : ""}>Copy</option>
-        <option value="aac" ${t.action === "aac" ? "selected" : ""}>AAC 192k</option>
-        <option value="opus" ${t.action === "opus" ? "selected" : ""}>Opus 128k</option>
-        <option value="ac3" ${t.action === "ac3" ? "selected" : ""}>AC3 384k</option>
-      </select>
-    </div>
-  `,
-    )
-    .join("");
-}
-
-// Display subtitle tracks
-function displaySubtitleTracks() {
-  const streams = metadata.streams.filter((s) => s.codec_type === "subtitle");
-  const durationSeconds = parseFloat(metadata?.format?.duration || "0") || 0;
-
-  if (streams.length === 0) {
-    subtitleSection.classList.add("hidden");
-    subtitleTracks = [];
-    return;
-  }
-
-  subtitleSection.classList.remove("hidden");
-  subtitleTracks = streams.map((s) => {
-    const isImage = [
+  subtitleTracks = subs.map((stream) => {
+    const image = [
       "hdmv_pgs_subtitle",
       "dvd_subtitle",
       "dvdsub",
       "pgssub",
-    ].includes(s.codec_name?.toLowerCase());
-
-    // Set default action based on codec and type
-    let defaultAction = "copy";
-    const codec = s.codec_name?.toLowerCase();
-
-    // Default to ASS for text-based subtitles (not image-based)
-    if (!isImage && codec && codec !== "ass" && codec !== "ssa") {
-      defaultAction = "ass";
-    }
-
-    const language = (s.tags?.language || "und").toUpperCase();
-    const enabled =
-      preferredSubLangs.length === 0 ||
-      preferredSubLangs.includes(language.toLowerCase());
-
+      "vobsub",
+    ].includes(String(stream.codec_name || "").toLowerCase());
     return {
-      index: s.index,
-      enabled,
-      action: defaultAction,
-      title: s.tags?.title || "",
-      language,
-      codec: s.codec_name?.toUpperCase() || "Unknown",
-      type: isImage ? "Image" : "Text",
-      isImage,
-      currentSizeLabel: formatTrackSizeLabel(
-        estimateTrackSizeMb(s, durationSeconds),
-      ),
+      index: stream.index,
+      enabled:
+        !subtitleLanguages.length ||
+        subtitleLanguages.includes(
+          String(stream.tags?.language || "und").toLowerCase(),
+        ),
+      action: image ? "copy" : activeSettings?.subtitles?.action || "copy",
+      isImage: image,
+      language: String(stream.tags?.language || "und").toLowerCase(),
+      codec: String(stream.codec_name || "unknown").toLowerCase(),
+      sourceTitle:
+        typeof stream.tags?.title === "string" ? stream.tags.title : "",
+      titleConfig: titleConfigFor("subtitle", activeSettings),
+      disposition: { ...(stream.disposition || {}) },
+      sourceDefault:
+        Number(stream.disposition?.default) === 1 ||
+        stream.disposition?.default === true,
+      isDefault: false,
+      size: trackSize(stream, duration),
+      metadata: { ...stream },
     };
   });
-
-  renderSubtitleTracks();
+  attachmentTracks = fonts.map((stream, i) => ({
+    index: stream.index,
+    enabled: true,
+    filename: stream.tags?.filename || "Attachment " + (i + 1),
+    mimetype: stream.tags?.mimetype || stream.codec_name || "unknown",
+    isFont: /font|ttf|otf/i.test(
+      (stream.tags?.mimetype || "") + " " + (stream.tags?.filename || ""),
+    ),
+  }));
+  $("audioSection").classList.toggle("hidden", !audioTracks.length);
+  $("subtitleSection").classList.toggle("hidden", !subtitleTracks.length);
+  $("attachmentSection").classList.toggle("hidden", !attachmentTracks.length);
+  applyTrackDefaults();
+  renderTracks();
+  displayTitleControls();
+  if (
+    subtitleTracks.some((track) => track.isImage) &&
+    (fileSettings || savedSettings)?.subtitles?.action !== "copy"
+  )
+    notify(
+      "Image subtitles (PGS/VobSub) can only be copied; text conversion is unavailable.",
+      "warning",
+    );
+  if (attachmentTracks.some((t) => t.enabled && t.isFont))
+    notify(
+      "Embedded subtitle fonts are preserved. FFmpeg may prepare these fonts before encoding.",
+      "info",
+    );
 }
-
-function renderSubtitleTracks() {
-  const enabled = subtitleTracks.filter((t) => t.enabled).length;
-  document.getElementById("subtitleCount").textContent =
-    `${enabled}/${subtitleTracks.length}`;
-
-  subtitleTracksEl.innerHTML = subtitleTracks
+function selectMarkup(kind, i, value, options, disabled = false) {
+  return (
+    '<select class="track-action" data-kind="' +
+    kind +
+    '" data-index="' +
+    i +
+    '"' +
+    (disabled ? " disabled" : "") +
+    ">" +
+    options
+      .map(
+        ([option, label]) =>
+          '<option value="' +
+          escapeHtml(option) +
+          '"' +
+          (value === option ? " selected" : "") +
+          ">" +
+          escapeHtml(label) +
+          "</option>",
+      )
+      .join("") +
+    "</select>"
+  );
+}
+function renderTrackList(container, tracks, kind) {
+  container.innerHTML = tracks
+    .map((track, i) => {
+      const title =
+        kind === "attachment"
+          ? track.filename
+          : displayTrackTitle(track, kind, i);
+      const sourceName =
+        kind === "attachment"
+          ? track.filename
+          : track.sourceTitle ||
+            `${kind === "audio" ? "Audio" : "Subtitle"} track ${i + 1}`;
+      const meta =
+        kind === "attachment"
+          ? (track.isFont ? "Font" : "Attachment") + " · " + track.mimetype
+          : String(track.language || "und").toUpperCase() +
+            " · " +
+            String(track.codec || "unknown").toUpperCase() +
+            (kind === "audio"
+              ? " · " +
+                (Number(track.channels) > 0
+                  ? Number(track.channels) + "ch source"
+                  : "channels unknown") +
+                (track.channelsMode === "stereo" ? " · Stereo output" : "")
+              : "") +
+            " · " +
+            track.size;
+      let actions = "";
+      if (kind === "audio") {
+        actions =
+          '<label class="track-control"><span>Output title</span><input class="track-title-input" data-kind="audio" data-track-field="title" data-index="' +
+          i +
+          '" value="' +
+          escapeHtml(title === "(empty title)" ? "" : title) +
+          '" placeholder="' +
+          escapeHtml(
+            title === "(empty title)"
+              ? "No output title"
+              : track.sourceTitle || "No source title",
+          ) +
+          '" /></label>' +
+          '<label class="track-control"><span>Conversion</span>' +
+          selectMarkup(kind, i, track.action, [
+            ["copy", "Copy (preserve)"],
+            ["aac", "AAC"],
+            ["opus", "Opus"],
+            ["ac3", "AC3"],
+          ]) +
+          "</label>" +
+          '<label class="track-control"><span>Bitrate</span><input class="track-bitrate-input" data-kind="audio-bitrate" data-index="' +
+          i +
+          '" type="number" min="32" max="1536" step="8" value="' +
+          escapeHtml(track.bitrate || 192) +
+          '"' +
+          (track.action === "copy" ? " disabled" : "") +
+          " /></label>" +
+          '<label class="track-control"><span>Channels</span>' +
+          selectMarkup("channels", i, track.channelsMode || "preserve", [
+            ["preserve", "Preserve channels"],
+            ["stereo", "Stereo"],
+          ]) +
+          "</label>" +
+          '<button type="button" class="quick-stereo-btn" data-action="quick-stereo" data-index="' +
+          i +
+          '">Quick stereo</button>' +
+          '<label class="track-control track-default"><input type="radio" name="audioDefault" data-kind="default-audio" data-index="' +
+          i +
+          '"' +
+          (track.isDefault ? " checked" : "") +
+          (track.enabled ? "" : " disabled") +
+          "><span>Default</span></label>";
+      } else if (kind === "subtitle") {
+        const subOptions = track.isImage
+          ? [["copy", "Copy"]]
+          : [
+              ["copy", "Copy"],
+              ["srt", "SRT"],
+              ["ass", "ASS"],
+              ["mov_text", "MOV text"],
+              ["webvtt", "WebVTT"],
+            ];
+        actions =
+          '<label class="track-control"><span>Output title</span><input class="track-title-input" data-kind="subtitle" data-track-field="title" data-index="' +
+          i +
+          '" value="' +
+          escapeHtml(title === "(empty title)" ? "" : title) +
+          '" placeholder="' +
+          escapeHtml(
+            title === "(empty title)"
+              ? "No output title"
+              : track.sourceTitle || "No source title",
+          ) +
+          '" /></label>' +
+          '<label class="track-control"><span>Conversion</span>' +
+          selectMarkup(kind, i, track.action, subOptions) +
+          "</label>" +
+          '<label class="track-control track-default"><input type="radio" name="subtitleDefault" data-kind="default-subtitle" data-index="' +
+          i +
+          '"' +
+          (track.isDefault ? " checked" : "") +
+          (track.enabled ? "" : " disabled") +
+          "><span>Default</span></label>";
+      }
+      return (
+        '<div class="track-item ' +
+        (track.enabled ? "" : "track-item-disabled") +
+        '"><input type="checkbox" data-kind="' +
+        kind +
+        '" data-index="' +
+        i +
+        '" aria-label="Include ' +
+        escapeHtml(title) +
+        '"' +
+        (track.enabled ? " checked" : "") +
+        '><div class="track-info"><span class="track-name">' +
+        escapeHtml(sourceName) +
+        '</span><span class="track-meta">' +
+        escapeHtml(meta) +
+        '</span></div><div class="track-controls">' +
+        actions +
+        "</div></div>"
+      );
+    })
+    .join("");
+  const countId =
+    kind === "audio"
+      ? "audioCount"
+      : kind === "subtitle"
+        ? "subtitleCount"
+        : "attachmentCount";
+  const count = $(countId);
+  if (count)
+    count.textContent =
+      tracks.filter((track) => track.enabled).length + "/" + tracks.length;
+}
+function renderTracks() {
+  renderTrackList(ui.audio, audioTracks, "audio");
+  renderTrackList(ui.subtitles, subtitleTracks, "subtitle");
+  renderTrackList(ui.attachments, attachmentTracks, "attachment");
+}
+function plannedChannels(track) {
+  return track.channelsMode === "stereo" ? 2 : Number(track.channels) || 2;
+}
+function titleContext(track, kind, i) {
+  const tracks = kind === "audio" ? audioTracks : subtitleTracks;
+  const outputTrackNumber =
+    tracks.slice(0, i).filter((candidate) => candidate.enabled).length + 1;
+  const sourceName = basename(currentFile || "").replace(/\.[^.]*$/, "");
+  const outputFormat =
+    $("outputFormat")?.value ||
+    (fileSettings || savedSettings)?.video?.outputFormat ||
+    "mkv";
+  let outputCodec = track.codec || "unknown";
+  if (kind === "audio") {
+    outputCodec =
+      track.action === "copy" ? track.codec || "unknown" : track.action;
+  } else if (track.action !== "copy") {
+    outputCodec =
+      outputFormat === "mp4" || outputFormat === "mov"
+        ? "mov_text"
+        : track.action === "srt"
+          ? outputFormat === "webm"
+            ? "webvtt"
+            : "subrip"
+          : track.action === "ass"
+            ? "ass"
+            : track.action;
+  }
+  return {
+    source_name: sourceName,
+    original_title: track.sourceTitle || "",
+    language: track.language || "und",
+    codec: core?.getCodecBase(outputCodec) || outputCodec,
+    channels: kind === "audio" ? String(plannedChannels(track)) : "unknown",
+    track_number: String(outputTrackNumber),
+  };
+}
+function displayTrackTitle(track, kind, i) {
+  try {
+    const result = settingsCore?.resolveTitle(
+      track.titleConfig,
+      titleContext(track, kind, i),
+    );
+    return result === undefined
+      ? track.sourceTitle || "Track " + (i + 1)
+      : result === ""
+        ? "(empty title)"
+        : result;
+  } catch (_) {
+    return track.sourceTitle || "Track " + (i + 1);
+  }
+}
+function applyTrackDefaults() {
+  if (!settingsCore || !(fileSettings || savedSettings)) return;
+  const apply = (tracks, group, type) => {
+    const current = tracks.find((track) => track.enabled && track.isDefault);
+    if (current) {
+      tracks.forEach((track) => {
+        track.isDefault = track.enabled && track.index === current.index;
+      });
+      return;
+    }
+    if (type === "subtitle" && subtitleDefaultTouched) return;
+    const included = tracks.filter((track) => track.enabled);
+    const selected = settingsCore.resolveDefaultTracks(
+      included,
+      group.defaultPolicy,
+      group.defaultLanguages,
+      type,
+    );
+    const defaults = new Set(
+      selected.filter((track) => track.isDefault).map((track) => track.index),
+    );
+    tracks.forEach((track) => {
+      track.isDefault = track.enabled && defaults.has(track.index);
+    });
+  };
+  apply(audioTracks, (fileSettings || savedSettings).audio, "audio");
+  apply(subtitleTracks, (fileSettings || savedSettings).subtitles, "subtitle");
+}
+function displayTitleControls() {
+  const movieSource =
+    typeof metadata?.format?.tags?.title === "string"
+      ? metadata.format.tags.title
+      : "";
+  const video = metadata?.streams?.find(
+    (stream) =>
+      stream.codec_type === "video" && !stream.disposition?.attached_pic,
+  );
+  const videoSource =
+    typeof video?.tags?.title === "string" ? video.tags.title : "";
+  currentTitles = currentTitles || {};
+  const activeSettings = fileSettings || savedSettings;
+  if (!currentTitles.movieTitle)
+    currentTitles.movieTitle = titleConfigFor("movie", activeSettings);
+  if (!currentTitles.videoTitle)
+    currentTitles.videoTitle = titleConfigFor("video", activeSettings);
+  $("movieTitleMode").value = currentTitles.movieTitle.mode;
+  $("movieTitleValue").value = currentTitles.movieTitle.value || "";
+  $("movieTitleValue").placeholder = movieSource || "Source title preserved";
+  $("movieTitleValue").disabled = ["preserve", "clear"].includes(
+    currentTitles.movieTitle.mode,
+  );
+  $("videoTitleMode").value = currentTitles.videoTitle.mode;
+  $("videoTitleValue").value = currentTitles.videoTitle.value || "";
+  $("videoTitleValue").placeholder = videoSource || "Source title preserved";
+  $("videoTitleValue").disabled = ["preserve", "clear"].includes(
+    currentTitles.videoTitle.mode,
+  );
+}
+function initEncoderSelect() {
+  const sel = $("encoderSelect");
+  sel.innerHTML = (availableEncoders.available || ["software"])
     .map(
-      (t, idx) => `
-    <div class="track-item track-toggle ${t.enabled ? "track-enabled" : "track-disabled"}" onclick="toggleSubtitle(${idx}, ${!t.enabled})" role="button" tabindex="0">
-      <input type="checkbox" ${t.enabled ? "checked" : ""} onclick="event.stopPropagation()" onchange="toggleSubtitle(${idx}, this.checked)">
-      <div class="track-info">
-        <span class="track-name">${t.title || "Track " + (idx + 1)}</span>
-        <span class="track-meta">${t.language} · ${t.codec} · ${t.type} · ${t.currentSizeLabel}</span>
-      </div>
-      <select class="track-action" onclick="event.stopPropagation()" onchange="setSubtitleAction(${idx}, this.value)" ${!t.enabled ? "disabled" : ""}>
-        <option value="copy" ${t.action === "copy" ? "selected" : ""}>Copy</option>
-        ${!t.isImage ? `<option value="srt" ${t.action === "srt" ? "selected" : ""}>SRT</option>` : ""}
-        ${!t.isImage ? `<option value="ass" ${t.action === "ass" ? "selected" : ""}>ASS</option>` : ""}
-        <option value="mov_text" ${t.action === "mov_text" ? "selected" : ""}>MOV Text</option>
-      </select>
-    </div>
-  `,
+      (x) =>
+        `<option value="${escapeHtml(x)}">${escapeHtml(labels[x] || x)}</option>`,
     )
     .join("");
+  sel.value = availableEncoders.recommended || "software";
+  updateCodecOptions();
 }
-
-// Track handlers
-window.toggleAudio = (idx, enabled) => {
-  audioTracks[idx].enabled = enabled;
-  renderAudioTracks();
-  updateCommand();
-};
-
-window.setAudioAction = (idx, action) => {
-  audioTracks[idx].action = action;
-  updateCommand();
-};
-
-window.toggleSubtitle = (idx, enabled) => {
-  subtitleTracks[idx].enabled = enabled;
-  renderSubtitleTracks();
-  updateCommand();
-};
-
-window.setSubtitleAction = (idx, action) => {
-  subtitleTracks[idx].action = action;
-  updateCommand();
-};
-
-// Display attachment tracks (fonts)
-function displayAttachmentTracks() {
-  const streams = metadata.streams.filter((s) => s.codec_type === "attachment");
-
-  if (streams.length === 0) {
-    attachmentSection.classList.add("hidden");
-    attachmentTracks = [];
+function updateCodecOptions() {
+  const family = $("encoderSelect").value;
+  const supported = availableEncoders.encoders?.[family] || {};
+  const choices = [
+    supported.hevc,
+    supported.h264,
+    supported.vp9,
+    supported.av1,
+  ].filter(Boolean);
+  if (!choices.length)
+    choices.push(
+      family === "software" ? "libx265" : "hevc_" + family,
+      family === "software" ? "libx264" : "h264_" + family,
+    );
+  const old = $("videoCodec").value;
+  $("videoCodec").innerHTML = choices
+    .map(
+      (c) =>
+        `<option value="${escapeHtml(c)}">${core?.getCodecBase(c) === "h264" ? "H.264" : core?.getCodecBase(c) === "vp9" ? "VP9" : core?.getCodecBase(c) === "av1" ? "AV1" : "HEVC"} (${escapeHtml(c)})</option>`,
+    )
+    .join("");
+  if (choices.includes(old)) $("videoCodec").value = old;
+  else $("videoCodec").value = choices[0];
+  updateQualityOptions();
+}
+function updateQualityOptions() {
+  const family = $("encoderSelect").value,
+    codec = $("videoCodec").value,
+    quality = $("videoQuality"),
+    preset = $("videoPreset"),
+    oldQ = quality.value,
+    oldP = preset.value;
+  const maxQuality = videoQualityMax(core?.getCodecBase(codec) || codec);
+  const q = [
+    ...new Set([
+      String((fileSettings || savedSettings)?.video?.quality || "22"),
+      ...(Number.isInteger(Number(oldQ)) &&
+      Number(oldQ) >= 0 &&
+      Number(oldQ) <= maxQuality
+        ? [String(oldQ)]
+        : []),
+      "22",
+      "15",
+      "28",
+      "35",
+    ]),
+  ].filter((value) => Number(value) <= maxQuality);
+  quality.innerHTML = q
+    .map(
+      (v) =>
+        `<option value="${v}">${family === "nvenc" ? "CQ" : family === "amf" ? "QP" : family === "qsv" ? "Global Quality" : family === "videotoolbox" ? "Quality (mapped)" : "CRF"} ${v}</option>`,
+    )
+    .join("");
+  quality.value = q.includes(oldQ) ? oldQ : q[0];
+  let p =
+    family === "nvenc"
+      ? ["p4", "p1", "p2", "p3", "p5", "p6", "p7"]
+      : family === "amf"
+        ? ["balanced", "speed", "quality"]
+        : family === "qsv"
+          ? ["medium", "veryfast", "fast", "slow", "veryslow"]
+          : family === "videotoolbox"
+            ? ["none"]
+            : core?.getCodecBase(codec) === "vp9"
+              ? ["4", "3", "5", "6"]
+              : core?.getCodecBase(codec) === "av1"
+                ? ["6", "4", "8"]
+                : [
+                    "medium",
+                    "ultrafast",
+                    "superfast",
+                    "veryfast",
+                    "faster",
+                    "fast",
+                    "slow",
+                    "slower",
+                    "veryslow",
+                  ];
+  preset.innerHTML = p
+    .map((v) => `<option value="${v}">${v}</option>`)
+    .join("");
+  preset.value = p.includes(oldP) ? oldP : p[0];
+  preset.disabled = family === "videotoolbox";
+}
+function videoQualityMax(codec) {
+  const base = String(core?.getCodecBase(codec) || codec || "").toLowerCase();
+  return base === "h264" || base === "hevc" ? 51 : 63;
+}
+function ensureSavedQualityOption(value, label = "Saved quality ") {
+  const quality = String(value ?? "");
+  if (
+    !/^\d+$/.test(quality) ||
+    Number(quality) < 0 ||
+    Number(quality) > videoQualityMax($("videoCodec").value)
+  )
+    return false;
+  const select = $("videoQuality");
+  if (![...select.options].some((option) => option.value === quality)) {
+    const option = document.createElement("option");
+    option.value = quality;
+    option.textContent = label + quality;
+    select.append(option);
+  }
+  select.value = quality;
+  return select.value === quality;
+}
+function setPresetOptions(family, codec, selected = "auto") {
+  const values =
+    family === "nvenc"
+      ? ["p4", "p1", "p2", "p3", "p5", "p6", "p7"]
+      : family === "amf"
+        ? ["balanced", "speed", "quality"]
+        : family === "qsv"
+          ? ["medium", "veryfast", "fast", "slow", "veryslow"]
+          : family === "videotoolbox"
+            ? ["none"]
+            : core?.getCodecBase(codec) === "vp9"
+              ? ["4", "3", "5", "6"]
+              : core?.getCodecBase(codec) === "av1"
+                ? ["6", "4", "8"]
+                : [
+                    "medium",
+                    "ultrafast",
+                    "superfast",
+                    "veryfast",
+                    "faster",
+                    "fast",
+                    "slow",
+                    "slower",
+                    "veryslow",
+                  ];
+  const choices = ["auto", ...values];
+  if (selected && !choices.includes(selected)) choices.push(selected);
+  $("defaultVideoPreset").innerHTML = choices
+    .map(
+      (value) =>
+        '<option value="' +
+        escapeHtml(value) +
+        '">' +
+        escapeHtml(value === "auto" ? "Automatic" : value) +
+        "</option>",
+    )
+    .join("");
+  $("defaultVideoPreset").value = choices.includes(selected)
+    ? selected
+    : "auto";
+}
+function loadControlsFromMetadata() {
+  initEncoderSelect();
+  const video = (fileSettings || savedSettings)?.video || {};
+  autoEncoder = video.encoderFamily === "auto";
+  const family = autoEncoder
+    ? availableEncoders.recommended || "software"
+    : video.encoderFamily;
+  if ([...(availableEncoders.available || []), "software"].includes(family))
+    $("encoderSelect").value = family;
+  updateCodecOptions();
+  const choice = Object.entries(
+    availableEncoders.encoders?.[$("encoderSelect").value] || {},
+  ).find(([base]) => base === video.codec)?.[1];
+  if (choice) $("videoCodec").value = choice;
+  updateQualityOptions();
+  ensureSavedQualityOption(video.quality || "22");
+  $("videoPreset").value =
+    video.preset &&
+    video.preset !== "auto" &&
+    [...$("videoPreset").options].some(
+      (option) => option.value === video.preset,
+    )
+      ? video.preset
+      : $("videoPreset").options[0]?.value;
+  $("outputFormat").value = video.outputFormat || "mkv";
+  outputDirectory = video.outputDirectory || "";
+  $("outputDirectoryLabel").textContent =
+    outputDirectory || "Same folder as source";
+}
+function estimateFrames() {
+  const stream = metadata?.streams?.find(
+    (s) => s.codec_type === "video" && !s.disposition?.attached_pic,
+  );
+  const frames = Number(stream?.nb_frames);
+  if (frames > 0) return frames;
+  const duration = Number(metadata?.format?.duration || stream?.duration || 0);
+  const rate = String(stream?.avg_frame_rate || stream?.r_frame_rate || "")
+    .split("/")
+    .map(Number);
+  return duration > 0 && rate[1] > 0
+    ? Math.round((duration * rate[0]) / rate[1])
+    : 0;
+}
+function optionsFromUi() {
+  const activeSettings = fileSettings || savedSettings;
+  const settingsAudio = activeSettings?.audio || {
+    action: "copy",
+    channelsMode: "preserve",
+    stereoCodec: "aac",
+    stereoBitrate: 192,
+  };
+  return {
+    encoderFamily: $("encoderSelect").value,
+    autoEncoder,
+    videoCodec: $("videoCodec").value,
+    videoQuality: $("videoQuality").value,
+    videoPreset: $("videoPreset").value,
+    outputFormat: $("outputFormat").value,
+    outputDirectory,
+    audioTracks: audioTracks
+      .filter((t) => t.enabled)
+      .map((t) => settingsCore?.normalizeAudioTrack(t, settingsAudio) || t),
+    subtitleTracks: subtitleTracks.filter((t) => t.enabled),
+    movieTitle: structuredClone(
+      currentTitles.movieTitle || { mode: "preserve", value: "" },
+    ),
+    videoTitle: structuredClone(
+      currentTitles.videoTitle || { mode: "preserve", value: "" },
+    ),
+    settings: structuredClone(activeSettings || settingsCore.DEFAULT_SETTINGS),
+    attachmentTracks: attachmentTracks.filter((t) => t.enabled),
+    channelsMode:
+      settingsAudio.channelsMode || prefs.defaultChannelsMode || "preserve",
+    duration: Number(metadata?.format?.duration) || 0,
+    totalFrames: estimateFrames(),
+  };
+}
+function updateCommand() {
+  $("customCommandBanner")?.classList.toggle("hidden", !commandModified);
+  if (!currentFile || commandModified) return;
+  const opts = optionsFromUi();
+  const issues = core?.getCompatibilityIssues(opts) || [];
+  renderCompatibility(issues);
+  $("addToQueueBtn").disabled = issues.length > 0;
+  $("sampleBtn").disabled =
+    issues.length > 0 || queueProcessing || sampleRunning;
+  if (issues.length) {
+    ui.preview.textContent =
+      "Resolve the output compatibility issues to preview this command.";
+    rememberControls();
     return;
   }
-
-  attachmentSection.classList.remove("hidden");
-  attachmentTracks = streams.map((s) => {
-    const filename = s.tags?.filename || `Attachment ${s.index}`;
-    const mimetype = s.tags?.mimetype || s.codec_name || "unknown";
-    const isFont =
-      /font|ttf|otf|woff/i.test(mimetype) ||
-      /\.(ttf|otf|woff|woff2)$/i.test(filename);
-
-    // Try multiple possible size fields from various container formats
-    let sizeBytes = 0;
-
-    // Common ffprobe attachment size fields
-    const sizeFields = [
-      s.extradata_size, // This is where attachment data size is stored
-      s.tags?.NUMBER_OF_BYTES,
-      s.tags?.BYTES,
-      s.tags?.SIZE,
-      s.tags?.size,
-      s.tags?.["NUMBER OF BYTES"],
-      s.tags?.["File size"],
-      s.tags?.filesize,
-      s.tags?.DATA_SIZE,
-      s.size,
-      s.data_size,
-      s.stream_size,
-    ];
-
-    for (const field of sizeFields) {
-      if (field && !isNaN(parseFloat(field))) {
-        sizeBytes = parseFloat(field);
-        break;
-      }
-    }
-
-    // If no size found, try to estimate based on typical font sizes
-    let sizeLabel;
-    if (sizeBytes > 0) {
-      sizeLabel = formatAttachmentSize(sizeBytes);
-    } else if (isFont) {
-      sizeLabel = "~50-500 KB (estimated)";
-    } else {
-      sizeLabel = "Size unavailable";
-    }
-
-    return {
-      index: s.index,
-      enabled: true,
-      filename,
-      mimetype,
-      isFont,
-      sizeLabel,
-    };
-  });
-
-  renderAttachmentTracks();
+  const out =
+    core?.getOutputPath(
+      currentFile,
+      opts.outputFormat,
+      outputDirectory,
+      "_encoded",
+    ) || currentFile;
+  try {
+    const args =
+      core?.buildEncodeArgs(
+        currentFile,
+        out,
+        opts,
+        opts.attachmentTracks,
+        "hardware",
+      ) || [];
+    ui.preview.textContent =
+      core?.formatCommand(args) || "ffmpeg command unavailable";
+  } catch (e) {
+    ui.preview.textContent = `Command unavailable: ${e.message}`;
+  }
+  rememberControls();
 }
-
-function renderAttachmentTracks() {
-  const enabled = attachmentTracks.filter((t) => t.enabled).length;
-  document.getElementById("attachmentCount").textContent =
-    `${enabled}/${attachmentTracks.length}`;
-
-  attachmentTracksEl.innerHTML = attachmentTracks
-    .map(
-      (t, idx) => `
-    <div class="track-item">
-      <input type="checkbox" ${t.enabled ? "checked" : ""} onchange="toggleAttachment(${idx}, this.checked)">
-      <div class="track-info">
-        <span class="track-name">${t.filename}</span>
-        <span class="track-meta">${t.isFont ? "Font" : "File"} · ${t.mimetype} · ${t.sizeLabel}</span>
-      </div>
-    </div>
-  `,
-    )
-    .join("");
+function rememberControls() {
+  for (const id of [
+    "encoderSelect",
+    "videoCodec",
+    "videoQuality",
+    "videoPreset",
+    "outputFormat",
+  ])
+    lastControlValues[id] = $(id).value;
 }
-
-window.toggleAttachment = (idx, enabled) => {
-  attachmentTracks[idx].enabled = enabled;
-  renderAttachmentTracks();
-  updateCommand();
-};
-
-// Update format options based on selected codec
-function updateFormatOptions() {
-  // Format availability is the same for all encoders - depends on codec type
-  const codecBase = getCodecBase(videoCodec);
-
-  const availableFormats = {
-    hevc: [
-      { value: "mkv", label: "Matroska (MKV)" },
-      { value: "mov", label: "MOV (QuickTime)" },
-    ],
-    h264: [
-      { value: "mkv", label: "Matroska (MKV)" },
-      { value: "mp4", label: "MPEG-4 (MP4)" },
-      { value: "mov", label: "MOV (QuickTime)" },
-    ],
-    vp9: [
-      { value: "mkv", label: "Matroska (MKV)" },
-      { value: "webm", label: "WebM (VP9)" },
-    ],
-    av1: [
-      { value: "mkv", label: "Matroska (MKV)" },
-      { value: "webm", label: "WebM" },
-      { value: "mov", label: "MOV (QuickTime)" },
-    ],
-  };
-
-  const options = availableFormats[codecBase] || availableFormats.hevc;
-  outputFormatSelect.innerHTML = options
-    .map(
-      (opt) =>
-        `<option value="${opt.value}" ${outputFormat === opt.value ? "selected" : ""}>${opt.label}</option>`,
-    )
-    .join("");
-
-  // Use first available format if current one isn't available
-  if (!options.find((opt) => opt.value === outputFormat)) {
-    outputFormat = options[0].value;
-    outputFormatSelect.value = outputFormat;
+function renderCompatibility(issues) {
+  const box = $("compatibilityIssues");
+  if (!box) return;
+  box.replaceChildren();
+  if (!issues.length) return;
+  for (const issue of issues) {
+    const p = document.createElement("p");
+    p.textContent = issue;
+    box.append(p);
   }
+  const button = document.createElement("button");
+  button.className = "btn-secondary";
+  button.dataset.action = "switch-mkv";
+  button.textContent = "Switch to MKV";
+  box.append(button);
 }
-
-// Get base codec type from encoder-specific codec name
-function getCodecBase(codec) {
-  if (codec.includes("hevc") || codec.includes("265")) return "hevc";
-  if (codec.includes("264") || codec.includes("h264")) return "h264";
-  if (codec.includes("vp9")) return "vp9";
-  if (codec.includes("av1")) return "av1";
-  return "hevc";
-}
-
-// Get codec display label
-function getCodecLabel(codec) {
-  const base = getCodecBase(codec);
-  const labels = {
-    hevc: "HEVC (H.265)",
-    h264: "H.264 (AVC)",
-    vp9: "VP9",
-    av1: "AV1",
-  };
-  return labels[base] || codec;
-}
-
-// Update codec options based on selected encoder
-function updateCodecOptions() {
-  const encoderCodecsObj =
-    availableEncoders.encoders[selectedEncoderFamily] || {};
-
-  // Build codec options from what the encoder supports (object with hevc/h264 keys)
-  const options = [];
-  if (encoderCodecsObj.hevc) {
-    options.push({
-      value: encoderCodecsObj.hevc,
-      label: getCodecLabel(encoderCodecsObj.hevc),
-    });
-  }
-  if (encoderCodecsObj.h264) {
-    options.push({
-      value: encoderCodecsObj.h264,
-      label: getCodecLabel(encoderCodecsObj.h264),
-    });
-  }
-
-  // Fallback if no codecs available
-  if (options.length === 0) {
-    options.push({ value: "libx265", label: "HEVC (H.265)" });
-    options.push({ value: "libx264", label: "H.264 (AVC)" });
-  }
-
-  videoCodecSelect.innerHTML = options
-    .map(
-      (opt) =>
-        `<option value="${opt.value}" ${videoCodec === opt.value ? "selected" : ""}>${opt.label}</option>`,
-    )
-    .join("");
-
-  // Use first available codec if current one isn't available
-  if (!options.find((opt) => opt.value === videoCodec)) {
-    videoCodec = options[0].value;
-    videoCodecSelect.value = videoCodec;
-  }
-}
-
-// Update quality and preset options based on selected encoder
-function updateQualityAndPresetOptions() {
-  switch (selectedEncoderFamily) {
-    case "nvenc":
-      videoQualitySelect.innerHTML = `
-        <option value="22">CQ 22 (Default)</option>
-        <option value="15">CQ 15 (High)</option>
-        <option value="28">CQ 28 (Medium)</option>
-        <option value="35">CQ 35 (Low)</option>
-      `;
-      videoPresetSelect.innerHTML = `
-        <option value="p4">P4 (Default, Balanced compression)</option>
-        <option value="p1">P1 (Fastest, Lowest compression)</option>
-        <option value="p2">P2 (Faster, Lower compression)</option>
-        <option value="p3">P3 (Fast, Low compression)</option>
-        <option value="p5">P5 (Slow, High compression)</option>
-        <option value="p6">P6 (Slower, Very High compression)</option>
-        <option value="p7">P7 (Slowest, Highest compression)</option>
-      `;
-      break;
-
-    case "amf":
-      videoQualitySelect.innerHTML = `
-        <option value="22">QP 22 (Default)</option>
-        <option value="15">QP 15 (High)</option>
-        <option value="28">QP 28 (Medium)</option>
-        <option value="35">QP 35 (Low)</option>
-      `;
-      videoPresetSelect.innerHTML = `
-        <option value="balanced">Balanced</option>
-        <option value="speed">Speed</option>
-        <option value="quality">Quality</option>
-      `;
-      break;
-
-    case "qsv":
-      videoQualitySelect.innerHTML = `
-        <option value="22">Global Quality 22 (Default)</option>
-        <option value="15">Global Quality 15 (High)</option>
-        <option value="28">Global Quality 28 (Medium)</option>
-        <option value="35">Global Quality 35 (Low)</option>
-      `;
-      videoPresetSelect.innerHTML = `
-        <option value="medium">Medium</option>
-        <option value="veryfast">Very Fast</option>
-        <option value="fast">Fast</option>
-        <option value="slow">Slow</option>
-        <option value="veryslow">Very Slow</option>
-      `;
-      break;
-
-    case "videotoolbox":
-      videoQualitySelect.innerHTML = `
-        <option value="65">Quality 65 (Default)</option>
-        <option value="80">Quality 80 (High)</option>
-        <option value="50">Quality 50 (Medium)</option>
-        <option value="35">Quality 35 (Low)</option>
-      `;
-      videoPresetSelect.innerHTML = `
-        <option value="none">N/A</option>
-      `;
-      videoPresetSelect.disabled = true;
-      break;
-
-    case "software":
-    default:
-      videoQualitySelect.innerHTML = `
-        <option value="22">CRF 22 (Default)</option>
-        <option value="15">CRF 15 (High)</option>
-        <option value="28">CRF 28 (Medium)</option>
-        <option value="35">CRF 35 (Low)</option>
-      `;
-      videoPresetSelect.innerHTML = `
-        <option value="medium">Medium</option>
-        <option value="ultrafast">Ultrafast</option>
-        <option value="superfast">Superfast</option>
-        <option value="veryfast">Very Fast</option>
-        <option value="faster">Faster</option>
-        <option value="fast">Fast</option>
-        <option value="slow">Slow</option>
-        <option value="slower">Slower</option>
-        <option value="veryslow">Very Slow</option>
-      `;
-      videoPresetSelect.disabled = false;
-      break;
-  }
-
-  // Enable preset select if not videotoolbox
-  if (selectedEncoderFamily !== "videotoolbox") {
-    videoPresetSelect.disabled = false;
-  }
-
-  videoQuality = videoQualitySelect.value;
-  videoPreset = videoPresetSelect.value;
-}
-
-// Update command preview
-function updateCommand() {
-  if (!currentFile) return;
-
-  const outputPath = getOutputPath(currentFile);
-  const inputFile = JSON.stringify(currentFile);
-  const outputFile = JSON.stringify(outputPath);
-
-  const parts = ["ffmpeg"];
-
-  // Add hwaccel flags based on encoder family
-  switch (selectedEncoderFamily) {
-    case "nvenc":
-      parts.push("-hwaccel cuda", "-hwaccel_output_format cuda");
-      break;
-    case "qsv":
-      parts.push("-hwaccel qsv", "-hwaccel_output_format qsv");
-      break;
-    case "videotoolbox":
-      parts.push("-hwaccel videotoolbox");
-      break;
-    case "amf":
-      parts.push("-hwaccel d3d11va");
-      break;
-    // software: no hwaccel flags needed
-  }
-
-  parts.push(`-i ${inputFile}`, "-map 0:V:0");
-
-  const enabledAudio = audioTracks.filter((t) => t.enabled);
-  enabledAudio.forEach((t) => parts.push(`-map 0:${t.index}`));
-
-  const enabledSubs = subtitleTracks.filter((t) => t.enabled);
-  enabledSubs.forEach((t) => parts.push(`-map 0:${t.index}`));
-
-  const enabledAttachments = attachmentTracks.filter((t) => t.enabled);
-  enabledAttachments.forEach((t) => parts.push(`-map 0:${t.index}`));
-
-  // Add video codec with appropriate settings based on encoder
-  let videoCodecCmd = `-c:v ${videoCodec}`;
-
-  switch (selectedEncoderFamily) {
-    case "nvenc":
-      videoCodecCmd += ` -cq ${videoQuality} -preset ${videoPreset}`;
-      videoCodecCmd += " -rc:v vbr -b:v 0";
-      break;
-    case "amf":
-      videoCodecCmd += ` -qp_i ${videoQuality} -qp_p ${videoQuality} -quality ${videoPreset}`;
-      break;
-    case "qsv":
-      videoCodecCmd += ` -global_quality ${videoQuality} -preset ${videoPreset}`;
-      break;
-    case "videotoolbox":
-      videoCodecCmd += ` -q:v ${videoQuality}`;
-      break;
-    case "software":
-    default:
-      // Software encoders (libx264, libx265, libvpx-vp9, etc.)
-      const codecBase = getCodecBase(videoCodec);
-      if (codecBase === "vp9" || codecBase === "av1") {
-        videoCodecCmd += ` -crf ${videoQuality} -cpu-used ${videoPreset}`;
-      } else {
-        videoCodecCmd += ` -crf ${videoQuality} -preset ${videoPreset}`;
-      }
-      break;
-  }
-  parts.push(videoCodecCmd);
-
-  enabledAudio.forEach((t, idx) => {
-    if (t.action === "copy") parts.push(`-c:a:${idx} copy`);
-    else if (t.action === "aac") {
-      parts.push(`-c:a:${idx} aac -b:a:${idx} 192k`);
-      if (t.channels > 2) parts.push(`-ac:a:${idx} 2`);
-    } else if (t.action === "opus") {
-      parts.push(`-c:a:${idx} libopus -b:a:${idx} 128k`);
-      if (t.channels > 2) parts.push(`-ac:a:${idx} 2`);
-    } else if (t.action === "ac3")
-      parts.push(`-c:a:${idx} ac3 -b:a:${idx} 384k`);
-  });
-
-  enabledSubs.forEach((t, idx) => {
-    parts.push(`-c:s:${idx} ${t.action}`);
-  });
-
-  // Copy attachments (fonts)
-  if (enabledAttachments.length > 0) {
-    parts.push("-c:t copy");
-  }
-
-  // Add output format specific options
-  if (outputFormat === "mp4") {
-    parts.push("-movflags +faststart");
-  }
-
-  parts.push(outputFile);
-  commandPreview.textContent = parts.join(" ");
-  commandModified = false;
-}
-
-// Build a job object from the current settings view state
-function buildJobFromCurrentState() {
-  const id = editingJobId || createJobId();
+function jobFromCurrent() {
+  const opts = optionsFromUi(),
+    id = editingJobId || createId();
   return {
     id,
+    jobId: id,
     file: currentFile,
+    inputPath: currentFile,
     metadata,
     snapshot: {
-      audioTracks: JSON.parse(JSON.stringify(audioTracks)),
-      subtitleTracks: JSON.parse(JSON.stringify(subtitleTracks)),
-      attachmentTracks: JSON.parse(JSON.stringify(attachmentTracks)),
-      outputFormat,
-      videoCodec,
-      videoQuality,
-      videoPreset,
-      selectedEncoderFamily,
-      customCommand: commandModified ? commandPreview.textContent.trim() : null,
+      ...opts,
+      customCommand: commandModified ? ui.preview.textContent.trim() : null,
     },
     status: "pending",
+    outputPath:
+      core?.getOutputPath(
+        currentFile,
+        opts.outputFormat,
+        outputDirectory,
+        "_encoded",
+      ) || "",
     error: null,
-    outputPath: getOutputPath(currentFile),
-    inputSizeMb: null,
     outputSizeMb: null,
+    inputSizeMb: null,
+    missing: false,
   };
 }
-
-function createJobId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+function createId() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
-
-// Encode Now: build job, bump it to the front, then drive the queue
-async function encodeNow() {
+function compatibility(job) {
+  return core?.getCompatibilityIssues(job.snapshot) || [];
+}
+async function persistQueue() {
+  try {
+    await bridge.invoke(
+      "save-queue",
+      queue.map((j) => ({
+        ...j,
+        inputPath: j.file,
+        status: j.status === "running" ? "pending" : j.status,
+      })),
+    );
+  } catch (e) {
+    notify(`Queue could not be saved: ${e.message}`, "error");
+  }
+}
+function schedulePersist() {
+  clearTimeout(persistTimer);
+  persistTimer = setTimeout(persistQueue, 250);
+}
+async function persistNow() {
+  clearTimeout(persistTimer);
+  await persistQueue();
+}
+async function enqueueCurrent() {
   if (!currentFile) return;
-  if (queueProcessing) {
-    alert("Queue is running. Use Add to Queue while a job is in progress.");
+  const job = jobFromCurrent();
+  const issues = compatibility(job);
+  if (issues.length) {
+    renderCompatibility(issues);
+    notify(issues.join(" "), "error");
     return;
   }
-
-  const job = buildJobFromCurrentState();
-  const existingIdx = queue.findIndex((j) => j.id === job.id);
-  if (existingIdx >= 0) {
-    queue.splice(existingIdx, 1);
-  }
-  // Push to the front of pending jobs
-  const firstPendingIdx = queue.findIndex((j) => j.status === "pending");
-  if (firstPendingIdx < 0) {
-    queue.push(job);
-  } else {
-    queue.splice(firstPendingIdx, 0, job);
-  }
-
-  editingJobId = null;
-  pendingFiles = [];
-  pendingFileIndex = 0;
-  // User explicitly asked to encode now — send them to progress view so
-  // runJob's guard (which protects editing users) still lets the UI advance.
-  showOnlyView("progress");
-  await startQueue({ singleEncode: true, singleJobId: job.id });
-}
-
-// Add to Queue: append (or update if editing), return to drop zone
-function addToQueueAction() {
-  if (!currentFile) return;
-
-  const job = buildJobFromCurrentState();
-
   if (editingJobId) {
-    const idx = queue.findIndex((j) => j.id === editingJobId);
-    if (idx >= 0 && queue[idx].status !== "running") {
-      // Preserve position
-      queue[idx] = job;
-    } else {
-      queue.push(job);
-    }
+    const i = queue.findIndex((j) => j.id === editingJobId);
+    if (i >= 0) queue[i] = job;
     editingJobId = null;
-    resetCurrentFileState();
-    showOnlyView("drop");
-    renderQueue();
-    if (!queueProcessing) startQueue();
-  } else {
-    queue.push(job);
-    renderQueue();
-    if (!queueProcessing) startQueue();
-    advancePendingFiles();
-  }
-}
-
-// Start processing the queue. Safe to call repeatedly.
-async function startQueue({ singleEncode = false, singleJobId = null } = {}) {
-  if (queueProcessing) return;
-  if (!queue.some((j) => j.status === "pending")) return;
-
-  queueProcessing = true;
-  singleEncodeMode = singleEncode;
+  } else queue.push(job);
+  await persistNow();
   renderQueue();
-
+  resetEdit();
+  if (pendingFiles.length) {
+    const next = pendingFiles.shift();
+    updateBatchBanner();
+    await openFile(next);
+  } else if (queueProcessing) setView("progress");
+  else setView("drop");
+}
+function resetEdit() {
+  currentFile = null;
+  metadata = null;
+  commandModified = false;
+}
+async function startQueue() {
+  if (queueProcessing) return;
+  const next = queue.find(
+    (j) => j.status === "pending" && j.id !== editingJobId,
+  );
+  if (!next) return;
+  queuePaused = false;
+  queueProcessing = true;
+  stopAfterCurrent = false;
+  renderQueue();
   try {
-    while (true) {
-      // Skip the job currently being edited so it can't start mid-edit.
-      const next = queue.find(
+    while (!stopAfterCurrent) {
+      const job = queue.find(
         (j) => j.status === "pending" && j.id !== editingJobId,
       );
-      if (!next) break;
-      await runJob(next);
+      if (!job) break;
+      await runJob(job);
     }
   } finally {
     queueProcessing = false;
-    singleEncodeMode = false;
     currentJobId = null;
-    currentJobProgress = null;
-    stopTipCycle();
-
-    const view = getVisibleMainView();
-    if (view === "settings") {
-      // User is mid-edit — leave them alone
-      renderQueue();
-      return;
-    }
-
-    // Single encode that succeeded → show completion screen and remove that job
-    const singleJob = singleEncode && singleJobId
-      ? queue.find((j) => j.id === singleJobId)
-      : null;
-    if (singleJob && singleJob.status === "done") {
-      queue = queue.filter((j) => j.id !== singleJobId);
-      document.getElementById("outputPath").textContent = singleJob.outputPath;
-      const inMb = singleJob.inputSizeMb;
-      const outMb = singleJob.outputSizeMb;
-      const sizeEl = document.getElementById("sizeComparison");
-      if (Number.isFinite(inMb) && Number.isFinite(outMb) && inMb > 0) {
-        const savings = ((1 - outMb / inMb) * 100).toFixed(1);
-        const sign = savings >= 0 ? "-" : "+";
-        sizeEl.innerHTML = `
-          <span>${inMb.toFixed(1)} MB</span>
-          <span class="arrow">→</span>
-          <span>${outMb.toFixed(1)} MB</span>
-          <span class="savings positive">${sign}${Math.abs(savings)}%</span>`;
-      } else {
-        sizeEl.innerHTML = "";
-      }
-      showOnlyView("completion");
-    } else {
-      showOnlyView("drop");
-    }
+    await persistNow();
     renderQueue();
+    if (getVisibleView() === "progress") setView("drop");
   }
 }
-
-// Run a single job. Records outcome on the job; never throws.
 async function runJob(job) {
-  currentJobId = job.id;
+  const issues = compatibility(job);
+  if (issues.length) {
+    job.status = "error";
+    job.error = issues.join(" ");
+    notify(`${basename(job.file)}: ${job.error}`, "error");
+    schedulePersist();
+    return;
+  }
+  const stat = await bridge
+    .invoke("file-status", job.file)
+    .catch(() => ({ exists: false }));
+  if (!stat?.exists) {
+    job.status = "error";
+    job.missing = true;
+    job.error = "Source file is missing. Edit or remove this job.";
+    notify(job.error, "error");
+    schedulePersist();
+    return;
+  }
   job.status = "running";
   job.error = null;
-  encodeStartTime = Date.now();
-  currentJobProgress = null;
+  job.missing = false;
+  currentJobId = job.id;
+  job.inputSizeMb = stat.sizeMb;
+  showProgress(job);
   renderQueue();
-
-  // Only take over the progress view if we're already on it — meaning the
-  // user clicked "Encode Now" (which navigates there first). When the queue
-  // auto-starts from the drop zone, stay on the drop zone so the user can
-  // keep adding files; the inline queue-item progress handles feedback.
-  const currentView = getVisibleMainView();
-  if (currentView === "progress") {
-    showOnlyView("progress");
-    const progressFill = document.getElementById("progressFill");
-    progressFill.parentElement.classList.add("indeterminate");
-    progressFill.style.width = "100%";
-    document.getElementById("progressPercent").textContent = "--";
-    document.getElementById("eta").textContent = "--";
-    document.getElementById("fps").textContent = "--";
-    document.getElementById("speed").textContent = "--";
-    document.getElementById("elapsedTime").textContent = "0s";
-
-    debugLog.textContent = "";
-    debugLogSection.classList.toggle("hidden", !debugMode);
-    updateTipVisibility();
-  }
-
+  await persistNow();
   try {
-    if (fs.existsSync(job.file)) {
-      job.inputSizeMb = fs.statSync(job.file).size / (1024 * 1024);
-    }
-  } catch (_) {}
-
-  try {
-    if (job.snapshot.customCommand) {
-      await ipcRenderer.invoke("encode-custom", job.snapshot.customCommand);
-    } else {
-      const options = {
-        audioTracks: job.snapshot.audioTracks.filter((t) => t.enabled),
-        subtitleTracks: job.snapshot.subtitleTracks.filter((t) => t.enabled),
-        attachmentTracks: job.snapshot.attachmentTracks.filter(
-          (t) => t.enabled,
-        ),
-        videoCodec: job.snapshot.videoCodec,
-        videoQuality: job.snapshot.videoQuality,
-        videoPreset: job.snapshot.videoPreset,
-        outputFormat: job.snapshot.outputFormat,
-        encoderFamily: job.snapshot.selectedEncoderFamily,
-        totalFrames: estimateTotalVideoFrames(job.metadata),
-        duration: Number(job.metadata?.format?.duration) || 0,
-      };
-      await ipcRenderer.invoke(
-        "encode-video",
-        job.file,
-        job.outputPath,
-        options,
-      );
-    }
-
+    const opts = {
+      ...job.snapshot,
+      duration: Number(job.metadata?.format?.duration) || 0,
+      jobId: job.id,
+    };
+    const result = job.snapshot.customCommand
+      ? await bridge.invoke("encode-custom", job.snapshot.customCommand, {
+          jobId: job.id,
+          inputPath: job.file,
+          outputPath: job.outputPath,
+          duration: opts.duration,
+        })
+      : await bridge.invoke("encode-video", job.file, job.outputPath, opts);
+    if (!result?.success) throw new Error(result?.error || "Encoding failed");
     job.status = "done";
-    try {
-      if (fs.existsSync(job.outputPath)) {
-        job.outputSizeMb = fs.statSync(job.outputPath).size / (1024 * 1024);
-      }
-    } catch (_) {}
-  } catch (error) {
-    console.error("Encoding error:", error);
+    job.outputPath = result.outputPath || job.outputPath;
+    job.inputSizeMb = result.inputSizeMb ?? job.inputSizeMb;
+    job.outputSizeMb = result.outputSizeMb;
+    job.actualVideoCodec = result.actualVideoCodec;
+    job.notice = result.notice || "";
+    job.error = null;
+    if (job.notice) notify(job.notice, "warning");
+    if (!queueProcessing || getVisibleView() === "progress")
+      showCompletion(job);
+  } catch (e) {
     job.status = "error";
-    job.error = error?.message || String(error);
+    job.error = e.message || String(e);
+    notify(`${basename(job.file)} failed: ${job.error}`, "error");
   }
-
   currentJobId = null;
   renderQueue();
+  await persistNow();
 }
-
-window.removeJob = (id) => {
-  const idx = queue.findIndex((j) => j.id === id);
-  if (idx < 0) return;
-  if (queue[idx].status === "running") return;
-  queue.splice(idx, 1);
-  renderQueue();
-};
-
-window.moveJob = (id, direction) => {
-  const idx = queue.findIndex((j) => j.id === id);
-  if (idx < 0) return;
-  const target = idx + direction;
-  if (target < 0 || target >= queue.length) return;
-  // Only reorder among pending jobs; don't let a pending job jump a running one
-  if (queue[idx].status !== "pending") return;
-  if (queue[target].status === "running") return;
-  if (queue[target].status === "done" || queue[target].status === "error") {
-    // Keep finished items grouped; skip over them
-    return;
-  }
-  const tmp = queue[idx];
-  queue[idx] = queue[target];
-  queue[target] = tmp;
-  renderQueue();
-};
-
-window.editJob = async (id) => {
-  const job = queue.find((j) => j.id === id);
-  if (!job) return;
-  if (job.status === "running") return;
-
-  if (!checkCommandModification()) return;
-
-  editingJobId = id;
-  currentFile = job.file;
-  metadata = job.metadata;
-  audioTracks = JSON.parse(JSON.stringify(job.snapshot.audioTracks));
-  subtitleTracks = JSON.parse(JSON.stringify(job.snapshot.subtitleTracks));
-  attachmentTracks = JSON.parse(JSON.stringify(job.snapshot.attachmentTracks));
-  outputFormat = job.snapshot.outputFormat;
-  videoCodec = job.snapshot.videoCodec;
-  videoQuality = job.snapshot.videoQuality;
-  videoPreset = job.snapshot.videoPreset;
-  selectedEncoderFamily = job.snapshot.selectedEncoderFamily;
-
-  displayFileInfo();
-  renderAudioTracks();
-  renderSubtitleTracks();
-  renderAttachmentTracks();
-
-  // Show/hide sections based on track presence
-  audioSection.classList.toggle("hidden", audioTracks.length === 0);
-  subtitleSection.classList.toggle("hidden", subtitleTracks.length === 0);
-  attachmentSection.classList.toggle("hidden", attachmentTracks.length === 0);
-
-  updateEncoderSelect();
-  updateCodecOptions();
-  updateQualityAndPresetOptions();
-  updateFormatOptions();
-
-  // Sync select elements to saved values
-  videoCodecSelect.value = videoCodec;
-  videoQualitySelect.value = videoQuality;
-  videoPresetSelect.value = videoPreset;
-  outputFormatSelect.value = outputFormat;
-
-  if (job.snapshot.customCommand) {
-    commandPreview.textContent = job.snapshot.customCommand;
-    commandModified = true;
-  } else {
-    commandModified = false;
-    updateCommand();
-  }
-
-  showOnlyView("settings");
-  renderQueue();
-};
-
-function clearFinishedJobs() {
-  queue = queue.filter((j) => j.status === "pending" || j.status === "running");
-  renderQueue();
+function showProgress(job) {
+  setView("progress");
+  $("debugLogSection").classList.toggle("hidden", !prefs.debugMode);
+  $("progressPercent").textContent = "Starting";
+  $("elapsedTime").textContent = "0s";
+  $("eta").textContent = "--";
+  $("speed").textContent = "--";
+  $("fps").textContent = "--";
+  $("progressFill").style.width = "0%";
+  $("progressFill").parentElement.classList.add("indeterminate");
+  $("tipText").textContent = `Encoding ${basename(job.file)}…`;
+  debugLines = [];
+  renderDebug();
 }
-
-function renderQueue() {
-  const pending = queue.filter((j) => j.status === "pending").length;
-  const running = queue.filter((j) => j.status === "running").length;
-  const done = queue.filter((j) => j.status === "done").length;
-  const errored = queue.filter((j) => j.status === "error").length;
-  const finished = done + errored;
-
-  const hasAny = queue.length > 0;
-  const view = getVisibleMainView();
-
-  // Show queue panel when items exist, except:
-  // - settings/completion views
-  // - single encode mode (user clicked Encode Now; queue is just internal state)
-  const shouldShow =
-    hasAny && view !== "settings" && view !== "completion" && !singleEncodeMode;
-  queuePanel.classList.toggle("hidden", !shouldShow);
-
-  if (!hasAny) {
-    queueList.innerHTML = "";
-    queueActions.classList.add("hidden");
-    return;
-  }
-
-  queueStatus.textContent = queueProcessing
-    ? `${pending} pending · ${running} running · ${finished} finished`
-    : pending > 0
-      ? `${pending} pending · ${finished} finished`
-      : `${finished} finished`;
-
-  queueList.innerHTML = queue.map(renderQueueItem).join("");
-
-  queueActions.classList.remove("hidden");
-  startQueueBtn.classList.toggle("hidden", queueProcessing || pending === 0);
-  clearFinishedBtn.classList.toggle("hidden", finished === 0);
-
-  // Editing banner visibility (only relevant in settings view)
-  editingBanner.classList.toggle("hidden", !editingJobId);
-
-  // Encode Now: hide while queue is running, show otherwise
-  if (encodeNowBtn) {
-    encodeNowBtn.classList.toggle("hidden", queueProcessing);
-    encodeNowBtn.disabled = queueProcessing;
-  }
-
-  // Add to Queue label: "Update Item" when editing an existing job
-  if (addToQueueBtn) {
-    addToQueueBtn.textContent = editingJobId ? "Update Item" : "Add to Queue";
-  }
+function showCompletion(job) {
+  lastCompletedOutputFolder = dirname(job.outputPath);
+  $("outputPath").textContent = job.outputPath;
+  $("sizeComparison").textContent =
+    Number.isFinite(job.inputSizeMb) && Number.isFinite(job.outputSizeMb)
+      ? `${job.inputSizeMb.toFixed(1)} MB → ${job.outputSizeMb.toFixed(1)} MB`
+      : "Encoding complete";
+  lastCompletedOutputFolder =
+    job.snapshot?.outputDirectory || dirname(job.outputPath);
+  setView("completion");
 }
-
-function renderQueueItem(job, idx) {
-  const isRunning = job.status === "running";
-  const isFinished = job.status === "done" || job.status === "error";
-  const statusEl = {
-    pending: '<div class="qi-dot"></div>',
-    running: '<div class="qi-spinner"></div>',
-    done: '<div class="qi-check">✓</div>',
-    error: '<div class="qi-error">!</div>',
-  }[job.status];
-
-  const filename = job.file ? job.file.split(/[\\/]/).pop() : "(unknown)";
-  const codecLabel = getCodecLabel(job.snapshot.videoCodec);
-  let meta;
-  if (job.status === "error") {
-    meta = `Error: ${job.error || "unknown error"}`;
-  } else if (job.status === "done") {
-    const inMb = job.inputSizeMb;
-    const outMb = job.outputSizeMb;
-    if (Number.isFinite(inMb) && Number.isFinite(outMb) && inMb > 0) {
-      const savings = ((1 - outMb / inMb) * 100).toFixed(1);
-      meta = `Done · ${inMb.toFixed(1)} MB → ${outMb.toFixed(1)} MB (${savings >= 0 ? "-" : "+"}${Math.abs(savings)}%)`;
-    } else {
-      meta = "Done";
-    }
-  } else {
-    const shortEnc =
-      {
-        nvenc: "NVENC",
-        amf: "AMF",
-        qsv: "QSV",
-        videotoolbox: "VideoToolbox",
-        software: "CPU",
-      }[job.snapshot.selectedEncoderFamily] ||
-      job.snapshot.selectedEncoderFamily;
-    meta = `${codecLabel} · Q${job.snapshot.videoQuality} · ${job.snapshot.outputFormat.toUpperCase()} · ${shortEnc}`;
-  }
-
-  const firstPendingIdx = queue.findIndex((j) => j.status === "pending");
-  const lastPendingIdx = (() => {
-    for (let i = queue.length - 1; i >= 0; i--) {
-      if (queue[i].status === "pending") return i;
-    }
-    return -1;
-  })();
-  const canMoveUp = job.status === "pending" && idx > firstPendingIdx;
-  const canMoveDown = job.status === "pending" && idx < lastPendingIdx;
-  const canEdit = !isRunning;
-  const canRemove = !isRunning;
-
-  const escapedId = job.id.replace(/'/g, "\\'");
-  const title = escapeHtml(filename);
-  const metaClass =
-    job.status === "error" ? "queue-item-meta error-text" : "queue-item-meta";
-  const progressSection = isRunning
-    ? `<div class="queue-item-progress-wrap" id="qi-progress-${job.id}">
-        <div class="queue-item-bar-track qi-indeterminate"><div class="queue-item-bar-fill"></div></div>
-        <div class="queue-item-run-stats">Initializing…</div>
-      </div>`
-    : "";
-
-  return `
-    <div class="queue-item status-${job.status}">
-      <div class="queue-item-status">${statusEl}</div>
-      <div class="queue-item-info">
-        <span class="queue-item-name" title="${title}">${title}</span>
-        <span class="${metaClass}">${escapeHtml(meta)}</span>
-        ${progressSection}
-      </div>
-      <div class="queue-item-actions">
-        ${
-          job.status === "pending"
-            ? `
-          <button class="queue-btn" onclick="moveJob('${escapedId}', -1)" ${!canMoveUp ? "disabled" : ""} title="Move up">↑</button>
-          <button class="queue-btn" onclick="moveJob('${escapedId}', 1)" ${!canMoveDown ? "disabled" : ""} title="Move down">↓</button>
-          <button class="queue-btn" onclick="editJob('${escapedId}')" title="Edit">✎</button>
-          <button class="queue-btn danger" onclick="removeJob('${escapedId}')" title="Remove">✕</button>
-        `
-            : isFinished
-              ? `
-          <button class="queue-btn danger" onclick="removeJob('${escapedId}')" title="Remove">✕</button>
-        `
-              : ""
-        }
-      </div>
-    </div>
-  `;
-}
-
-function escapeHtml(str) {
-  if (typeof str !== "string") return "";
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-function resetCurrentFileState() {
-  currentFile = null;
-  metadata = null;
-  audioTracks = [];
-  subtitleTracks = [];
-  attachmentTracks = [];
-  outputFormat = "mkv";
-  commandModified = false;
-  editingJobId = null;
-  pendingFiles = [];
-  pendingFileIndex = 0;
-
-  selectedEncoderFamily = availableEncoders.recommended || "software";
-  const defaultCodecsObj =
-    availableEncoders.encoders[selectedEncoderFamily] || {};
-  videoCodec = defaultCodecsObj.hevc || defaultCodecsObj.h264 || "libx265";
-  videoQuality = "22";
-  videoPreset = selectedEncoderFamily === "nvenc" ? "p4" : "medium";
-
-  editingBanner.classList.add("hidden");
-
-  // Reset button labels now that editing is cancelled
-  if (encodeNowBtn) encodeNowBtn.classList.toggle("hidden", queueProcessing);
-  if (addToQueueBtn) addToQueueBtn.textContent = "Add to Queue";
-  updateBatchBanner();
-
-  try {
-    fileInput.value = "";
-  } catch (_) {}
-}
-
-// Progress handler
-ipcRenderer.on("encode-progress", (event, progress) => {
-  const progressFill = document.getElementById("progressFill");
-  const progressBar = progressFill.parentElement;
-  const percentRaw = Number(progress.percent || 0);
-  const indeterminate = percentRaw < 0;
-
-  if (indeterminate) {
-    progressBar.classList.add("indeterminate");
-    document.getElementById("progressPercent").textContent = "--";
-    progressFill.style.width = "100%";
-  } else {
-    progressBar.classList.remove("indeterminate");
-    const percent = Math.max(0, percentRaw);
-    document.getElementById("progressPercent").textContent =
-      `${percent.toFixed(1)}%`;
-    progressFill.style.width = `${Math.min(100, percent)}%`;
-  }
-
-  const fpsValue = Number(progress.currentFps || 0);
-  document.getElementById("fps").textContent =
-    fpsValue > 0 ? fpsValue.toFixed(1) : "--";
-
-  const speedValue = Number(progress.currentSpeed || 0);
-  if (speedValue > 0) {
-    document.getElementById("speed").textContent = `${speedValue.toFixed(2)}x`;
-  } else if (progress.currentKbps) {
-    document.getElementById("speed").textContent =
-      (progress.currentKbps / 1000).toFixed(2) + " Mbps";
-  } else {
-    document.getElementById("speed").textContent = "--";
-  }
-
-  const elapsed = (Date.now() - encodeStartTime) / 1000;
-  document.getElementById("elapsedTime").textContent = formatDuration(elapsed);
-
-  // Calculate ETA from frames and fps when available
-  const currentFrame = Number(progress.currentFrame || 0);
-  const totalFrames = Number(progress.totalFrames || 0);
-  let etaText = "--";
-
-  if (totalFrames > 0 && currentFrame > 0 && fpsValue > 0) {
-    const remainingFrames = totalFrames - currentFrame;
-    const remaining = remainingFrames / fpsValue;
-    etaText = formatDuration(remaining);
-  } else if (!indeterminate && percentRaw > 0 && elapsed > 0) {
-    const total = (elapsed / percentRaw) * 100;
-    const remaining = total - elapsed;
-    etaText = formatDuration(remaining);
-  }
-  document.getElementById("eta").textContent = etaText;
-
-  // Store for live queue item updates
-  currentJobProgress = {
-    percent: percentRaw,
-    fps: fpsValue,
-    elapsedText: formatDuration(elapsed),
-    etaText,
-  };
-  updateRunningQueueItemStats();
-});
-
-// Debug stderr handler
-ipcRenderer.on("encode-stderr", (event, text) => {
-  debugLog.textContent += text;
-  if (debugMode) {
-    debugLog.scrollTop = debugLog.scrollHeight;
-  }
-});
-
-function updateRunningQueueItemStats() {
-  if (!currentJobId || !currentJobProgress) return;
-  const wrap = document.getElementById(`qi-progress-${currentJobId}`);
-  if (!wrap) return;
-
-  const { percent, fps, elapsedText, etaText } = currentJobProgress;
-  const isIndeterminate = percent <= 0;
-  const track = wrap.querySelector(".queue-item-bar-track");
-  const fill = wrap.querySelector(".queue-item-bar-fill");
-  const statsEl = wrap.querySelector(".queue-item-run-stats");
-
-  if (isIndeterminate) {
-    track.classList.add("qi-indeterminate");
-    fill.style.width = "100%";
-  } else {
-    track.classList.remove("qi-indeterminate");
-    fill.style.width = `${Math.min(100, percent)}%`;
-  }
-
-  const parts = [];
-  if (!isIndeterminate) parts.push(`${percent.toFixed(1)}%`);
-  if (elapsedText && elapsedText !== "0s") parts.push(`${elapsedText} elapsed`);
-  if (etaText && etaText !== "--") parts.push(`ETA ${etaText}`);
-  if (fps > 0) parts.push(`${fps.toFixed(1)} fps`);
-  statsEl.textContent = parts.length > 0 ? parts.join(" · ") : "Initializing…";
-}
-
-function getVisibleMainView() {
-  if (!dropZone.classList.contains("hidden")) return "drop";
-  if (!settingsView.classList.contains("hidden")) return "settings";
-  if (!progressView.classList.contains("hidden")) return "progress";
-  if (!completionView.classList.contains("hidden")) return "completion";
+function getVisibleView() {
+  for (const k of ["settings", "progress", "completion"])
+    if (!ui[k].classList.contains("hidden")) return k;
   return "drop";
 }
 
-function showOnlyView(viewName) {
-  dropZone.classList.add("hidden");
-  settingsView.classList.add("hidden");
-  progressView.classList.add("hidden");
-  completionView.classList.add("hidden");
-
-  if (viewName === "drop") dropZone.classList.remove("hidden");
-  else if (viewName === "settings") settingsView.classList.remove("hidden");
-  else if (viewName === "progress") progressView.classList.remove("hidden");
-  else if (viewName === "completion") completionView.classList.remove("hidden");
-
-  // Queue panel visibility depends on which view we're on
-  renderQueue();
+function renderQueue() {
+  const pending = queue.filter((j) => j.status === "pending").length,
+    running = queue.filter((j) => j.status === "running").length,
+    finished = queue.length - pending - running;
+  ui.queuePanel.classList.toggle(
+    "hidden",
+    !queue.length || getVisibleView() === "settings",
+  );
+  $("queueStatus").textContent =
+    `${pending} waiting · ${running} active · ${finished} finished`;
+  ui.queueList.innerHTML = queue
+    .map((j, i) => {
+      const st = ["pending", "running", "done", "error"].includes(j.status)
+          ? j.status
+          : "pending",
+        err = st === "error",
+        title = escapeHtml(basename(j.file));
+      const meta = err
+        ? escapeHtml(j.error || "Failed")
+        : st === "done"
+          ? `Done · ${escapeHtml(j.outputPath || "")}`
+          : `${escapeHtml(j.snapshot?.videoCodec || "")} · ${escapeHtml(j.snapshot?.outputFormat || "").toUpperCase()}${j.missing ? " · source missing" : ""}`;
+      const move =
+        i > 0 && st === "pending" && queue[i - 1].status === "pending"
+          ? `<button class="queue-btn" data-action="move-up" data-id="${escapeHtml(j.id)}" title="Move up">↑</button>`
+          : "";
+      const moveDown =
+        i < queue.length - 1 &&
+        st === "pending" &&
+        queue[i + 1].status === "pending"
+          ? `<button class="queue-btn" data-action="move-down" data-id="${escapeHtml(j.id)}" title="Move down">↓</button>`
+          : "";
+      const progress =
+        st === "running"
+          ? `<div class="queue-item-progress-wrap"><div class="queue-item-bar-track"><div class="queue-item-bar-fill" style="width:${Math.max(0, Math.min(100, Number(j.progress) || 0))}%"></div></div><div class="queue-item-run-stats">${Number(j.progress || 0).toFixed(1)}% · ${escapeHtml(j.currentSpeed || "Starting…")} · ETA ${escapeHtml(j.eta || "--")}</div></div>`
+          : "";
+      return `<div class="queue-item status-${st}"><div class="queue-item-status">${st === "running" ? "◌" : st === "done" ? "✓" : err ? "!" : "·"}</div><div class="queue-item-info"><span class="queue-item-name" title="${title}">${title}</span><span class="queue-item-meta ${err ? "error-text" : ""}">${meta}</span>${progress}${st === "done" ? `<button class="queue-btn" data-action="open-output" data-id="${escapeHtml(j.id)}">Open output</button>` : ""}</div><div class="queue-item-actions">${st === "pending" ? `${move}${moveDown}<button class="queue-btn" data-action="edit" data-id="${escapeHtml(j.id)}">Edit</button><button class="queue-btn danger" data-action="remove" data-id="${escapeHtml(j.id)}">Remove</button>` : err ? `<button class="queue-btn" data-action="edit" data-id="${escapeHtml(j.id)}">Edit</button><button class="queue-btn" data-action="retry" data-id="${escapeHtml(j.id)}">Retry</button><button class="queue-btn danger" data-action="remove" data-id="${escapeHtml(j.id)}">Remove</button>` : ""}</div></div>`;
+    })
+    .join("");
+  $("queueActions").classList.toggle("hidden", !queue.length);
+  $("startQueueBtn").classList.toggle("hidden", queueProcessing || !pending);
+  $("clearFinishedBtn").classList.toggle("hidden", !finished);
+  $("cancelCurrentBtn").classList.toggle("hidden", !queueProcessing);
+  $("stopAfterCurrentBtn").classList.toggle("hidden", !queueProcessing);
+  const issues = currentFile
+    ? core?.getCompatibilityIssues(optionsFromUi()) || []
+    : [];
+  const blocked = issues.length > 0;
+  $("sampleBtn").disabled = blocked || queueProcessing || sampleRunning;
+  $("addToQueueBtn").disabled = blocked;
 }
-
-function renderBinaryCheckResult(result) {
-  if (!result) {
-    envOverrideStatus.textContent = "";
-    envOverrideStatus.className = "env-override-status hidden";
-    binaryCheckResult.innerHTML = "";
+async function queueAction(action, id) {
+  const job = queue.find((j) => j.id === id);
+  if (action === "move-up" || action === "move-down") {
+    const index = queue.indexOf(job),
+      target = index + (action === "move-up" ? -1 : 1);
+    if (
+      index >= 0 &&
+      target >= 0 &&
+      target < queue.length &&
+      job?.status === "pending" &&
+      queue[target].status === "pending"
+    ) {
+      [queue[index], queue[target]] = [queue[target], queue[index]];
+      await persistNow();
+      renderQueue();
+    }
     return;
   }
-
-  const envDetails = [];
-  if (result.env?.ffmpegLoaded) {
-    envDetails.push(`FFMPEG_PATH loaded (${result.env.ffmpegVar})`);
+  if (action === "remove" && job && job.status !== "running") {
+    queue = queue.filter((x) => x !== job);
+    await persistNow();
+    renderQueue();
+    return;
   }
-  if (result.env?.ffprobeLoaded) {
-    envDetails.push(`FFPROBE_PATH loaded (${result.env.ffprobeVar})`);
+  if (action === "retry" && job) {
+    job.status = "pending";
+    job.error = null;
+    job.missing = false;
+    await persistNow();
+    renderQueue();
+    if (!queuePaused) startQueue();
+    return;
   }
-
-  if (envDetails.length > 0) {
-    envOverrideStatus.textContent = `Environment override active: ${envDetails.join(" | ")}`;
-    envOverrideStatus.className = "env-override-status env";
-  } else {
-    envOverrideStatus.textContent =
-      "No environment override detected. Using configured path values or system PATH.";
-    envOverrideStatus.className = "env-override-status normal";
-  }
-
-  const sourceLabel = (source) => {
-    if (source === "env") return "environment variable";
-    if (source === "config") return "configured path";
-    return "system PATH";
-  };
-
-  const buildMessage = (toolName, toolResult, source) => {
-    const sourceText = sourceLabel(source);
-    if (toolResult?.ok) {
-      const version = toolResult.version || `${toolName} is available`;
-      return `Valid ${sourceText}: ${version}`;
+  if (action === "edit" && job) {
+    editingJobId = job.id;
+    await openFile(job.file);
+    if (metadata) {
+      audioTracks = structuredClone(job.snapshot.audioTracks || []).map(
+        (track) => ({
+          ...track,
+          enabled: track.enabled !== false,
+          sourceTitle:
+            typeof track.sourceTitle === "string"
+              ? track.sourceTitle
+              : typeof track.title === "string"
+                ? track.title
+                : "",
+          titleConfig: track.titleConfig || { mode: "preserve", value: "" },
+          disposition: track.disposition || {},
+          isDefault:
+            typeof track.isDefault === "boolean"
+              ? track.isDefault
+              : track.sourceDefault === true ||
+                Number(track.disposition?.default) === 1,
+        }),
+      );
+      subtitleTracks = structuredClone(job.snapshot.subtitleTracks || []).map(
+        (track) => ({
+          ...track,
+          enabled: track.enabled !== false,
+          sourceTitle:
+            typeof track.sourceTitle === "string"
+              ? track.sourceTitle
+              : typeof track.title === "string"
+                ? track.title
+                : "",
+          titleConfig: track.titleConfig || { mode: "preserve", value: "" },
+          disposition: track.disposition || {},
+          isDefault:
+            typeof track.isDefault === "boolean"
+              ? track.isDefault
+              : track.sourceDefault === true ||
+                Number(track.disposition?.default) === 1,
+        }),
+      );
+      subtitleDefaultTouched =
+        subtitleTracks.length > 0 &&
+        !subtitleTracks.some((track) => track.enabled && track.isDefault);
+      attachmentTracks = structuredClone(job.snapshot.attachmentTracks || []);
+      fileSettings = structuredClone(
+        job.snapshot.settings || fileSettings || savedSettings,
+      );
+      currentTitles = {
+        movieTitle: structuredClone(
+          job.snapshot.movieTitle || { mode: "preserve", value: "" },
+        ),
+        videoTitle: structuredClone(
+          job.snapshot.videoTitle || { mode: "preserve", value: "" },
+        ),
+      };
+      outputDirectory = job.snapshot.outputDirectory ?? outputDirectory;
+      renderTracks();
+      displayTitleControls();
+      $("encoderSelect").value = job.snapshot.encoderFamily || "software";
+      autoEncoder = job.snapshot.autoEncoder !== false;
+      updateCodecOptions();
+      $("videoCodec").value = job.snapshot.videoCodec;
+      updateQualityOptions();
+      ensureSavedQualityOption(job.snapshot.videoQuality, "Queued quality ");
+      $("videoPreset").value = job.snapshot.videoPreset;
+      $("outputFormat").value = job.snapshot.outputFormat;
+      $("outputDirectoryLabel").textContent =
+        outputDirectory || "Same folder as source";
+      commandModified = !!job.snapshot.customCommand;
+      $("customCommandBanner").classList.toggle("hidden", !commandModified);
+      if (commandModified) ui.preview.textContent = job.snapshot.customCommand;
+      else updateCommand();
     }
-    const err = toolResult?.error || `${toolName} check failed`;
-    return `Invalid ${sourceText}: ${err}`;
-  };
+    return;
+  }
+  if (action === "open-output" && job)
+    bridge.invoke("open-path", job.outputPath);
+}
+function renderDebug() {
+  const el = $("debugLog");
+  el.textContent = debugLines.join("\n");
+  el.scrollTop = el.scrollHeight;
+}
+function logLine(line) {
+  debugLines.push(String(line));
+  if (debugLines.length > MAX_LOG_LINES)
+    debugLines.splice(0, debugLines.length - MAX_LOG_LINES);
+  renderDebug();
+}
 
-  const ffmpegStatus = result.ffmpeg?.ok ? "ok" : "bad";
-  const ffprobeStatus = result.ffprobe?.ok ? "ok" : "bad";
-
-  const ffmpegMessage = buildMessage(
-    "ffmpeg",
-    result.ffmpeg,
-    result.source?.ffmpeg,
+function settingValue(id) {
+  return $(id).value.trim();
+}
+function parseLanguages(id) {
+  return settingValue(id).toLowerCase().split(/[ ,]+/).filter(Boolean);
+}
+function fillSettingsForm(value) {
+  const s = settingsCore.normalizeSettings(value);
+  $("defaultEncoderFamily").value = s.video.encoderFamily;
+  $("defaultVideoCodec").value = s.video.codec;
+  $("defaultVideoQuality").value = s.video.quality;
+  $("defaultVideoQuality").max = String(videoQualityMax(s.video.codec));
+  $("defaultOutputFormat").value = s.video.outputFormat;
+  $("defaultOutputDirectory").value = s.video.outputDirectory;
+  setPresetOptions(
+    s.video.encoderFamily === "auto"
+      ? availableEncoders.recommended || "software"
+      : s.video.encoderFamily,
+    s.video.codec,
+    s.video.preset,
   );
-
-  const ffprobeMessage = buildMessage(
-    "ffprobe",
-    result.ffprobe,
-    result.source?.ffprobe,
-  );
-
-  binaryCheckResult.innerHTML = `
-    <div class="binary-row ${ffmpegStatus}">
-      <span class="binary-name">ffmpeg ${result.ffmpeg?.ok ? "VALID" : "INVALID"}</span>
-      <span class="binary-msg">${ffmpegMessage}</span>
-    </div>
-    <div class="binary-row ${ffprobeStatus}">
-      <span class="binary-name">ffprobe ${result.ffprobe?.ok ? "VALID" : "INVALID"}</span>
-      <span class="binary-msg">${ffprobeMessage}</span>
-    </div>
-  `;
+  $("preferredAudioLangs").value = s.audio.includeLanguages.join(", ");
+  $("defaultAudioLangs").value = s.audio.defaultLanguages.join(", ");
+  $("audioDefaultPolicy").value = s.audio.defaultPolicy;
+  $("defaultAudioAction").value = s.audio.action;
+  $("audioBitrate").value = s.audio.bitrate;
+  $("defaultChannelsMode").value = s.audio.channelsMode;
+  $("stereoCodec").value = s.audio.stereoCodec;
+  $("stereoBitrate").value = s.audio.stereoBitrate;
+  $("preferredSubLangs").value = s.subtitles.includeLanguages.join(", ");
+  $("defaultSubLangs").value = s.subtitles.defaultLanguages.join(", ");
+  $("subtitleDefaultPolicy").value = s.subtitles.defaultPolicy;
+  $("subtitleAction").value = s.subtitles.action;
+  $("templateMovie").value = s.naming.movie;
+  $("templateVideo").value = s.naming.video;
+  $("templateAudio").value = s.naming.audio;
+  $("templateSubtitle").value = s.naming.subtitle;
+  $("clearMovieName").checked = s.naming.clearNames.includes("movie");
+  $("clearVideoName").checked = s.naming.clearNames.includes("video");
+  $("clearAudioNames").checked = s.naming.clearNames.includes("audio");
+  $("clearSubtitleNames").checked = s.naming.clearNames.includes("subtitle");
+  syncClearNameInputs();
+  $("debugModeToggle").checked = s.tools.debugMode;
+  updateTemplatePreview();
+  return s;
 }
-
-function collectBinaryConfigInputs() {
-  return {
-    ffmpegPath: ffmpegPathInput.value.trim(),
-    ffprobePath: ffprobePathInput.value.trim(),
+function collectSettingsForm() {
+  return settingsCore.normalizeSettings({
+    schemaVersion: 1,
+    video: {
+      encoderFamily: $("defaultEncoderFamily").value,
+      codec: $("defaultVideoCodec").value,
+      quality: $("defaultVideoQuality").value,
+      preset: $("defaultVideoPreset").value,
+      outputFormat: $("defaultOutputFormat").value,
+      outputDirectory: $("defaultOutputDirectory").value.trim(),
+    },
+    audio: {
+      action: $("defaultAudioAction").value,
+      bitrate: $("audioBitrate").value,
+      channelsMode: $("defaultChannelsMode").value,
+      stereoCodec: $("stereoCodec").value,
+      stereoBitrate: $("stereoBitrate").value,
+      includeLanguages: parseLanguages("preferredAudioLangs"),
+      defaultPolicy: $("audioDefaultPolicy").value,
+      defaultLanguages: parseLanguages("defaultAudioLangs"),
+    },
+    subtitles: {
+      action: $("subtitleAction").value,
+      includeLanguages: parseLanguages("preferredSubLangs"),
+      defaultPolicy: $("subtitleDefaultPolicy").value,
+      defaultLanguages: parseLanguages("defaultSubLangs"),
+    },
+    naming: {
+      movie: $("templateMovie").value,
+      video: $("templateVideo").value,
+      audio: $("templateAudio").value,
+      subtitle: $("templateSubtitle").value,
+      clearNames: [
+        $("clearMovieName").checked && "movie",
+        $("clearVideoName").checked && "video",
+        $("clearAudioNames").checked && "audio",
+        $("clearSubtitleNames").checked && "subtitle",
+      ].filter(Boolean),
+    },
+    tools: { debugMode: $("debugModeToggle").checked },
+  });
+}
+function setSettingsError(message) {
+  const box = $("settingsError");
+  box.textContent = message || "";
+  box.classList.toggle("hidden", !message);
+}
+function validateSettingsForm() {
+  const quality = Number(settingValue("defaultVideoQuality"));
+  const qualityMax = videoQualityMax($("defaultVideoCodec").value);
+  if (!Number.isInteger(quality) || quality < 0 || quality > qualityMax)
+    throw new Error(
+      "Video quality must be a whole number from 0 to " +
+        qualityMax +
+        " for the selected codec.",
+    );
+  for (const id of ["audioBitrate", "stereoBitrate"]) {
+    const value = Number(settingValue(id));
+    if (!Number.isInteger(value) || value < 32 || value > 1536)
+      throw new Error(
+        "Audio bitrates must be whole numbers from 32 to 1536 kbps.",
+      );
+  }
+  const family =
+    $("defaultEncoderFamily").value === "auto"
+      ? availableEncoders.recommended || "software"
+      : $("defaultEncoderFamily").value;
+  const preset = $("defaultVideoPreset").value;
+  const values =
+    family === "nvenc"
+      ? ["auto", "p4", "p1", "p2", "p3", "p5", "p6", "p7"]
+      : family === "amf"
+        ? ["auto", "balanced", "speed", "quality"]
+        : family === "qsv"
+          ? ["auto", "medium", "veryfast", "fast", "slow", "veryslow"]
+          : family === "videotoolbox"
+            ? ["auto", "none"]
+            : $("defaultVideoCodec").value === "vp9"
+              ? ["auto", "4", "3", "5", "6"]
+              : $("defaultVideoCodec").value === "av1"
+                ? ["auto", "6", "4", "8"]
+                : [
+                    "auto",
+                    "medium",
+                    "ultrafast",
+                    "superfast",
+                    "veryfast",
+                    "faster",
+                    "fast",
+                    "slow",
+                    "slower",
+                    "veryslow",
+                  ];
+  if (!values.includes(preset))
+    throw new Error(
+      "Choose a preset supported by the selected encoder and codec.",
+    );
+  const context = {
+    source_name: "Source",
+    original_title: "Original title",
+    language: "eng",
+    codec: "aac",
+    channels: "2",
+    track_number: "1",
   };
+  for (const id of [
+    "templateMovie",
+    "templateVideo",
+    "templateAudio",
+    "templateSubtitle",
+  ]) {
+    const template = $(id).value;
+    if (template && !$(id).disabled)
+      settingsCore.renderNameTemplate(template, context);
+  }
 }
-
-function parseLangList(str) {
-  return str
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter((s) => s.length > 0);
+function updateTemplatePreview() {
+  const context = {
+    source_name: "Example film",
+    original_title: "Original title",
+    language: "eng",
+    codec: "aac",
+    channels: "2",
+    track_number: "1",
+  };
+  const result = [];
+  for (const [label, id] of [
+    ["Movie", "templateMovie"],
+    ["Video", "templateVideo"],
+    ["Audio", "templateAudio"],
+    ["Subtitle", "templateSubtitle"],
+  ]) {
+    const value = $(id)?.value || "";
+    const key = { Movie: "movie", Video: "video", Audio: "audio", Subtitle: "subtitle" }[label];
+    if ($( { movie: "clearMovieName", video: "clearVideoName", audio: "clearAudioNames", subtitle: "clearSubtitleNames" }[key])?.checked) {
+      result.push(label + ": cleared");
+      continue;
+    }
+    if (!value) continue;
+    try {
+      result.push(
+        label + ": " + settingsCore.renderNameTemplate(value, context),
+      );
+    } catch (e) {
+      result.push(label + ": " + e.message);
+    }
+  }
+  $("templatePreview").textContent =
+    result.join(" · ") ||
+    "Preview: source titles are preserved when templates are empty.";
 }
-
+function syncClearNameInputs() {
+  for (const [category, checkboxId, templateId] of [
+    ["movie", "clearMovieName", "templateMovie"],
+    ["video", "clearVideoName", "templateVideo"],
+    ["audio", "clearAudioNames", "templateAudio"],
+    ["subtitle", "clearSubtitleNames", "templateSubtitle"],
+  ]) {
+    const clear = $(checkboxId)?.checked === true;
+    const input = $(templateId);
+    if (input) input.disabled = clear;
+  }
+}
+function switchSettingsTab(name) {
+  document.querySelectorAll("[data-settings-tab]").forEach((tab) => {
+    const active = tab.dataset.settingsTab === name;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  });
+  document
+    .querySelectorAll("[data-settings-page]")
+    .forEach((page) =>
+      page.classList.toggle("hidden", page.dataset.settingsPage !== name),
+    );
+}
 async function loadSettings() {
   try {
-    const config = await ipcRenderer.invoke("get-binary-config");
-    ffmpegPathInput.value = config.ffmpegPath || "";
-    ffprobePathInput.value = config.ffprobePath || "";
-    renderBinaryCheckResult(config.check);
-  } catch (error) {
-    console.error("Failed to load binary config:", error);
-    renderBinaryCheckResult(null);
-  }
+    const binary = await bridge.invoke("get-binary-config");
+    $("ffmpegPathInput").value = binary?.ffmpegPath || "";
+    $("ffprobePathInput").value = binary?.ffprobePath || "";
+  } catch (_) {}
+  let legacy = {};
   try {
-    const prefs = await ipcRenderer.invoke("get-language-prefs");
-    preferredAudioLangs = prefs.audioLangs || [];
-    preferredSubLangs = prefs.subLangs || [];
-    debugMode = !!prefs.debugMode;
-    preferredAudioLangsInput.value = preferredAudioLangs.join(", ");
-    preferredSubLangsInput.value = preferredSubLangs.join(", ");
-    debugModeToggle.checked = debugMode;
-  } catch (error) {
-    console.error("Failed to load language prefs:", error);
+    legacy = (await bridge.invoke("get-language-prefs")) || {};
+  } catch (_) {}
+  try {
+    const stored = await bridge.invoke("get-settings");
+    savedSettings = settingsCore.normalizeSettings(stored);
+  } catch (_) {
+    savedSettings = settingsCore.migrateLegacySettings(legacy);
   }
+  prefs = {
+    ...prefs,
+    audioLangs: savedSettings.audio.includeLanguages,
+    subLangs: savedSettings.subtitles.includeLanguages,
+    defaultAudioAction: savedSettings.audio.action,
+    defaultChannelsMode: savedSettings.audio.channelsMode,
+    debugMode: savedSettings.tools.debugMode,
+  };
+  settingsDraft = structuredClone(savedSettings);
+  fillSettingsForm(settingsDraft);
 }
-
-async function checkBinaryConfig() {
-  checkBinaryConfigBtn.disabled = true;
-  checkBinaryConfigBtn.textContent = "Checking...";
-  try {
-    const check = await ipcRenderer.invoke(
-      "verify-binary-config",
-      collectBinaryConfigInputs(),
-    );
-    renderBinaryCheckResult(check);
-  } catch (error) {
-    console.error("Binary check failed:", error);
-    alert("Failed to verify binaries: " + error.message);
-  } finally {
-    checkBinaryConfigBtn.disabled = false;
-    checkBinaryConfigBtn.textContent = "Check Paths";
-  }
+async function openSettings() {
+  settingsDraft = structuredClone(
+    savedSettings || settingsCore.DEFAULT_SETTINGS,
+  );
+  fillSettingsForm(settingsDraft);
+  setSettingsError("");
+  switchSettingsTab("video");
+  $("settingsOverlay").classList.remove("hidden");
+  settingsOpen = true;
 }
-
-async function autoSaveSettings() {
+function cancelSettings() {
+  settingsDraft = structuredClone(savedSettings);
+  fillSettingsForm(settingsDraft);
+  setSettingsError("");
+  $("settingsOverlay").classList.add("hidden");
+  settingsOpen = false;
+}
+async function saveSettings() {
+  setSettingsError("");
   try {
-    // Save binary config
-    await ipcRenderer.invoke("save-binary-config", collectBinaryConfigInputs());
-
-    // Save language preferences + debug mode
-    const audioLangs = parseLangList(preferredAudioLangsInput.value);
-    const subLangs = parseLangList(preferredSubLangsInput.value);
-    await ipcRenderer.invoke("save-language-prefs", {
-      audioLangs,
-      subLangs,
-      debugMode: debugModeToggle.checked,
+    validateSettingsForm();
+    const next = collectSettingsForm();
+    await bridge.invoke("save-settings", next);
+    await bridge.invoke("save-binary-config", {
+      ffmpegPath: $("ffmpegPathInput").value.trim(),
+      ffprobePath: $("ffprobePathInput").value.trim(),
     });
-    preferredAudioLangs = audioLangs;
-    preferredSubLangs = subLangs;
-    debugMode = debugModeToggle.checked;
+    // Keep legacy readers compatible while old queue records are still present.
+    prefs = {
+      ...prefs,
+      audioLangs: next.audio.includeLanguages,
+      subLangs: next.subtitles.includeLanguages,
+      defaultAudioAction: next.audio.action,
+      defaultChannelsMode: next.audio.channelsMode,
+      debugMode: next.tools.debugMode,
+    };
+    savedSettings = next;
+    settingsDraft = structuredClone(next);
+    $("settingsOverlay").classList.add("hidden");
+    settingsOpen = false;
+    notify("Settings saved for future files.", "success");
   } catch (error) {
-    console.error("Failed to auto-save settings:", error);
+    setSettingsError(error.message || "Settings could not be saved.");
+  }
+}
+function resetSettingsDraft() {
+  fillSettingsForm(settingsCore.DEFAULT_SETTINGS);
+  settingsDraft = structuredClone(settingsCore.DEFAULT_SETTINGS);
+  setSettingsError("");
+}
+function applySavedDefaultsToCurrentFile() {
+  if (!currentFile) {
+    notify("Open a file before applying defaults.", "warning");
+    return;
+  }
+  fileSettings = structuredClone(savedSettings);
+  const currentEncoderFamily = $("encoderSelect").value;
+  autoEncoder = savedSettings.video.encoderFamily === "auto";
+  const wantedFamily = autoEncoder
+    ? availableEncoders.recommended || "software"
+    : savedSettings.video.encoderFamily;
+  if (
+    [...(availableEncoders.available || []), "software"].includes(wantedFamily)
+  )
+    $("encoderSelect").value = wantedFamily;
+  updateCodecOptions();
+  const choice = Object.entries(
+    availableEncoders.encoders?.[$("encoderSelect").value] || {},
+  ).find(([base]) => base === savedSettings.video.codec)?.[1];
+  if (choice) $("videoCodec").value = choice;
+  updateQualityOptions();
+  ensureSavedQualityOption(savedSettings.video.quality);
+  $("videoPreset").value =
+    savedSettings.video.preset !== "auto" &&
+    [...$("videoPreset").options].some(
+      (o) => o.value === savedSettings.video.preset,
+    )
+      ? savedSettings.video.preset
+      : $("videoPreset").options[0]?.value;
+  $("outputFormat").value = savedSettings.video.outputFormat;
+  outputDirectory = savedSettings.video.outputDirectory;
+  $("outputDirectoryLabel").textContent =
+    outputDirectory || "Same folder as source";
+  audioTracks.forEach((track) => {
+    track.enabled =
+      !savedSettings.audio.includeLanguages.length ||
+      savedSettings.audio.includeLanguages.includes(track.language);
+    track.action = savedSettings.audio.action;
+    track.bitrate = savedSettings.audio.bitrate;
+    track.channelsMode = savedSettings.audio.channelsMode;
+    if (track.channelsMode === "stereo" && track.action === "copy") {
+      track.action = savedSettings.audio.stereoCodec;
+      track.bitrate = savedSettings.audio.stereoBitrate;
+    }
+    track.titleConfig = titleConfigFor("audio", savedSettings);
+  });
+  subtitleTracks.forEach((track) => {
+    track.enabled =
+      !savedSettings.subtitles.includeLanguages.length ||
+      savedSettings.subtitles.includeLanguages.includes(track.language);
+    track.action = savedSettings.subtitles.action;
+    if (track.isImage && track.action !== "copy") track.action = "copy";
+    track.titleConfig = titleConfigFor("subtitle", savedSettings);
+  });
+  if (
+    subtitleTracks.some((track) => track.isImage) &&
+    savedSettings.subtitles.action !== "copy"
+  )
+    notify(
+      "Image subtitles (PGS/VobSub) can only be copied; text conversion is unavailable.",
+      "warning",
+    );
+  currentTitles = {
+    movieTitle: titleConfigFor("movie", savedSettings),
+    videoTitle: titleConfigFor("video", savedSettings),
+  };
+  applyTrackDefaults();
+  renderTracks();
+  displayTitleControls();
+  commandModified = false;
+  updateCommand();
+  $("settingsOverlay").classList.add("hidden");
+  settingsOpen = false;
+  if (currentEncoderFamily) rememberControls();
+  notify("Saved defaults applied to this file.", "success");
+}
+async function checkBinaryConfig() {
+  const result = await bridge.invoke("verify-binary-config", {
+    ffmpegPath: $("ffmpegPathInput").value.trim(),
+    ffprobePath: $("ffprobePathInput").value.trim(),
+  });
+  $("binaryCheckResult").textContent = JSON.stringify(result);
+}
+
+document.addEventListener("click", async (e) => {
+  const link = e.target.closest("a[href]");
+  if (link) {
+    const url = new URL(link.href, location.href);
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      e.preventDefault();
+      bridge.invoke("open-external", url.href);
+    }
+    return;
+  }
+  const button = e.target.closest("[data-action]");
+  const settingsTab = e.target.closest("[data-settings-tab]");
+  if (settingsTab) {
+    switchSettingsTab(settingsTab.dataset.settingsTab);
+    return;
+  }
+  if (button) {
+    const { action, id } = button.dataset;
+    if (action === "regenerate-command") {
+      commandModified = false;
+      updateCommand();
+      return;
+    }
+    if (action === "quick-stereo") {
+      const track = audioTracks[Number(button.dataset.index)];
+      if (track) {
+        track.action = (fileSettings || savedSettings).audio.stereoCodec;
+        track.bitrate = (fileSettings || savedSettings).audio.stereoBitrate;
+        track.channelsMode = "stereo";
+        const audioDefaults = (fileSettings || savedSettings).audio;
+        notify(
+          "Stereo conversion uses " +
+            audioDefaults.stereoCodec.toUpperCase() +
+            " at " +
+            audioDefaults.stereoBitrate +
+            " kbps.",
+          "info",
+        );
+        renderTracks();
+        updateCommand();
+      }
+      return;
+    }
+    if (action === "clear-subtitle-default") {
+      subtitleDefaultTouched = true;
+      subtitleTracks.forEach((track) => {
+        track.isDefault = false;
+      });
+      renderTracks();
+      updateCommand();
+      return;
+    }
+    if (action === "switch-mkv") {
+      $("outputFormat").value = "mkv";
+      commandModified = false;
+      updateCommand();
+      return;
+    }
+    if (action === "open-sample") {
+      const p = $("sampleResult").dataset.path;
+      if (p) bridge.invoke("open-path", p);
+      return;
+    }
+    if (
+      [
+        "edit",
+        "retry",
+        "remove",
+        "open-output",
+        "move-up",
+        "move-down",
+      ].includes(action)
+    ) {
+      await queueAction(action, id);
+      return;
+    }
+  }
+  const id = e.target.closest("button")?.id;
+  if (id === "browseFilesBtn") chooseFiles();
+  else if (e.target.closest("#dropZone")) chooseFiles();
+  else if (id === "changeFileBtn") {
+    if (currentFile) await chooseFiles();
+  } else if (id === "addToQueueBtn") enqueueCurrent();
+  else if (id === "startQueueBtn") {
+    queuePaused = false;
+    startQueue();
+  } else if (id === "clearFinishedBtn") {
+    queue = queue.filter(
+      (j) => j.status === "pending" || j.status === "running",
+    );
+    await persistNow();
+    renderQueue();
+  } else if (id === "cancelCurrentBtn" && currentJobId)
+    bridge
+      .invoke("cancel-encode", currentJobId)
+      .catch((e) => notify(e.message, "error"));
+  else if (id === "stopAfterCurrentBtn") {
+    stopAfterCurrent = true;
+    queuePaused = true;
+  } else if (id === "openSettingsBtn") openSettings();
+  else if (id === "closeSettingsBtn" || id === "cancelSettingsBtn")
+    cancelSettings();
+  else if (id === "saveSettingsBtn") saveSettings();
+  else if (id === "resetSettingsBtn") resetSettingsDraft();
+  else if (id === "applyDefaultsBtn") applySavedDefaultsToCurrentFile();
+  else if (id === "checkBinaryConfigBtn") checkBinaryConfig();
+  else if (id === "encodeAnotherBtn") {
+    setView("drop");
+  } else if (id === "openOutputFolderBtn") {
+    if (lastCompletedOutputFolder)
+      bridge.invoke("open-path", lastCompletedOutputFolder);
+    else if (outputDirectory) bridge.invoke("open-path", outputDirectory);
+  } else if (id === "chooseOutputFolderBtn") {
+    outputDirectory =
+      (await bridge.invoke("select-output-folder")) || outputDirectory;
+    $("outputDirectoryLabel").textContent =
+      outputDirectory || "Same folder as source";
+    updateCommand();
+  } else if (id === "sampleBtn") runSample();
+  else if (id === "clearDebugLog") {
+    debugLines = [];
+    renderDebug();
+  }
+});
+document.addEventListener("change", (e) => {
+  const t = e.target;
+  if (t.matches(".track-title-input")) {
+    const tracks = t.dataset.kind === "audio" ? audioTracks : subtitleTracks;
+    const item = tracks[Number(t.dataset.index)];
+    if (item) {
+      item.titleConfig = { mode: "manual", value: t.value };
+      updateCommand();
+    }
+    return;
+  }
+  if (
+    t.dataset.kind === "default-audio" ||
+    t.dataset.kind === "default-subtitle"
+  ) {
+    const tracks =
+      t.dataset.kind === "default-audio" ? audioTracks : subtitleTracks;
+    if (t.dataset.kind === "default-subtitle") subtitleDefaultTouched = true;
+    tracks.forEach((track, i) => {
+      track.isDefault = i === Number(t.dataset.index) && track.enabled;
+    });
+    renderTracks();
+    updateCommand();
+    return;
+  }
+  if (t.dataset.kind === "audio-bitrate") {
+    const item = audioTracks[Number(t.dataset.index)];
+    if (item) {
+      item.bitrate = Number(t.value);
+      updateCommand();
+    }
+    return;
+  }
+  if (t.id === "movieTitleMode" || t.id === "videoTitleMode") {
+    const key = t.id === "movieTitleMode" ? "movieTitle" : "videoTitle";
+    currentTitles[key] = {
+      mode: t.value,
+      value:
+        t.value === "template"
+          ? savedSettings.naming[key === "movieTitle" ? "movie" : "video"] || ""
+          : currentTitles[key]?.value || "",
+    };
+    displayTitleControls();
+    updateCommand();
+    return;
+  }
+  if (t.id === "movieTitleValue" || t.id === "videoTitleValue") {
+    const key = t.id === "movieTitleValue" ? "movieTitle" : "videoTitle";
+    currentTitles[key] = { mode: "manual", value: t.value };
+    displayTitleControls();
+    updateCommand();
+    return;
+  }
+  if (t.dataset.settingsTab) {
+    switchSettingsTab(t.dataset.settingsTab);
+    return;
+  }
+  if (t.dataset.kind) {
+    const group =
+      t.dataset.kind === "audio" || t.dataset.kind === "channels"
+        ? audioTracks
+        : t.dataset.kind === "subtitle"
+          ? subtitleTracks
+          : attachmentTracks;
+    const item = group[Number(t.dataset.index)];
+    if (!item) return;
+    const previousAction = item.action;
+    if (t.type === "checkbox") {
+      item.enabled = t.checked;
+      if (t.dataset.kind === "audio" || t.dataset.kind === "subtitle")
+        applyTrackDefaults();
+    } else if (t.dataset.kind === "channels") {
+      item.channelsMode = t.value;
+      if (t.value === "stereo" && item.action === "copy") {
+        const defaults = (fileSettings || savedSettings).audio;
+        item.action = defaults.stereoCodec;
+        item.bitrate = defaults.stereoBitrate;
+      }
+    } else {
+      item.action = t.value;
+      if (t.dataset.kind === "audio" && t.value === "copy")
+        item.channelsMode = "preserve";
+    }
+    if (
+      t.dataset.kind === "channels" &&
+      item.channelsMode === "stereo" &&
+      item.action === "copy"
+    ) {
+      const audioDefaults = (fileSettings || savedSettings).audio;
+      notify(
+        "Stereo conversion uses " +
+          audioDefaults.stereoCodec.toUpperCase() +
+          " at " +
+          audioDefaults.stereoBitrate +
+          " kbps.",
+        "info",
+      );
+    }
+    renderTracks();
+    updateCommand();
+    return;
+  }
+  if (
+    [
+      "encoderSelect",
+      "videoCodec",
+      "videoQuality",
+      "videoPreset",
+      "outputFormat",
+      "sampleStart",
+    ].includes(t.id)
+  ) {
+    if (t.id === "encoderSelect") {
+      autoEncoder = false;
+      updateCodecOptions();
+    }
+    if (t.id === "videoCodec") updateQualityOptions();
+    updateCommand();
+    rememberControls();
+  }
+  if (t.id === "defaultEncoderFamily" || t.id === "defaultVideoCodec") {
+    $("defaultVideoQuality").max = String(
+      videoQualityMax($("defaultVideoCodec").value),
+    );
+    const family =
+      $("defaultEncoderFamily").value === "auto"
+        ? availableEncoders.recommended || "software"
+        : $("defaultEncoderFamily").value;
+    setPresetOptions(family, $("defaultVideoCodec").value, "auto");
+  }
+  if (t.id.startsWith("template")) updateTemplatePreview();
+  if (t.id.startsWith("clear") && t.type === "checkbox") {
+    syncClearNameInputs();
+    updateTemplatePreview();
+  }
+});
+document.addEventListener("input", (e) => {
+  const t = e.target;
+  if (t === ui.preview) {
+    commandModified = true;
+    $("customCommandBanner").classList.remove("hidden");
+    return;
+  }
+  if (t.matches(".track-title-input")) {
+    const tracks = t.dataset.kind === "audio" ? audioTracks : subtitleTracks;
+    const item = tracks[Number(t.dataset.index)];
+    if (item) item.titleConfig = { mode: "manual", value: t.value };
+    updateCommand();
+    return;
+  }
+  if (t.id === "movieTitleValue" || t.id === "videoTitleValue") {
+    const key = t.id === "movieTitleValue" ? "movieTitle" : "videoTitle";
+    currentTitles[key] = { mode: "manual", value: t.value };
+    $(key === "movieTitle" ? "movieTitleMode" : "videoTitleMode").value =
+      "manual";
+    updateCommand();
+    return;
+  }
+  if (t.id.startsWith("template")) updateTemplatePreview();
+});
+ui.drop.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  ui.drop.classList.add("drag-over");
+});
+ui.drop.addEventListener("dragleave", () =>
+  ui.drop.classList.remove("drag-over"),
+);
+ui.drop.addEventListener("drop", (e) => {
+  e.preventDefault();
+  ui.drop.classList.remove("drag-over");
+  const paths = Array.from(e.dataTransfer.files || [])
+    .map((f) => bridge.filePath(f))
+    .filter(Boolean);
+  if (paths.length) acceptFiles(paths);
+});
+ui.drop.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    chooseFiles();
+  }
+});
+ui.preview.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") e.preventDefault();
+});
+async function runSample() {
+  if (!currentFile || sampleRunning || queueProcessing) return;
+  const opts = optionsFromUi();
+  const issues = core?.getCompatibilityIssues(opts) || [];
+  if (issues.length) {
+    renderCompatibility(issues);
+    notify(issues.join(" "), "error");
+    return;
+  }
+  const duration = Number(metadata?.format?.duration) || 0;
+  let start = Number($("sampleStart").value) || 0;
+  start = Math.max(0, Math.min(start, Math.max(0, duration - 1)));
+  const out =
+    core?.getOutputPath(
+      currentFile,
+      opts.outputFormat,
+      outputDirectory,
+      "_sample",
+    ) || "";
+  sampleRunning = true;
+  $("sampleBtn").disabled = true;
+  try {
+    const result = await bridge.invoke("encode-sample", currentFile, out, {
+      ...opts,
+      sampleStart: start,
+      sampleDuration: 30,
+      jobId: createId(),
+    });
+    const sample = $("sampleResult");
+    sample.textContent = `Sample: ${result.outputPath} · estimated ${Number(result.estimatedSizeMb || result.outputSizeMb || 0).toFixed(1)} MB `;
+    const open = document.createElement("button");
+    open.className = "queue-btn";
+    open.dataset.action = "open-sample";
+    open.textContent = "Open";
+    sample.append(open);
+    sample.dataset.path = result.outputPath;
+    sample.classList.remove("hidden");
+  } catch (e) {
+    notify(`Sample encode failed: ${e.message}`, "error");
+  } finally {
+    sampleRunning = false;
+    $("sampleBtn").disabled = false;
   }
 }
 
-function openSettings() {
-  settingsOverlay.classList.remove("hidden");
+function formatProgressTime(value) {
+  if (
+    value == null ||
+    value === "" ||
+    !Number.isFinite(Number(value)) ||
+    Number(value) < 0
+  )
+    return "--";
+  const seconds = Math.round(Number(value));
+  const hours = Math.floor(seconds / 3600),
+    minutes = Math.floor((seconds % 3600) / 60);
+  return hours
+    ? `${hours}h ${minutes}m`
+    : minutes
+      ? `${minutes}m ${seconds % 60}s`
+      : `${seconds}s`;
 }
-
-function closeSettings() {
-  settingsOverlay.classList.add("hidden");
+function formatProgressNumber(value, speed = false) {
+  const number = Number.parseFloat(value);
+  return Number.isFinite(number) && number >= 0
+    ? speed
+      ? `${number.toFixed(1)}×`
+      : String(Math.round(number))
+    : "--";
 }
-
-// Helpers
-function getOutputPath(inputPath) {
-  const parsed = path.parse(inputPath);
-  return path.join(parsed.dir, `${parsed.name}_encoded.${outputFormat}`);
+bridge.on("encode-stderr", (payload) => {
+  if (payload?.jobId && payload.jobId !== currentJobId) return;
+  logLine(payload?.message || payload);
+});
+bridge.on("encode-notice", (payload) => {
+  if (payload?.jobId && payload.jobId !== currentJobId) return;
+  notify(payload?.message || String(payload), "warning");
+});
+bridge.on("encode-progress", (payload) => {
+  if (!payload || (payload.jobId && payload.jobId !== currentJobId)) return;
+  const job = queue.find((j) => j.id === currentJobId),
+    total = Number(payload.totalFrames || job?.snapshot?.totalFrames || 0),
+    frame = Number(payload.currentFrame || payload.frame || 0);
+  const p = Number.isFinite(Number(payload.percent))
+    ? Number(payload.percent)
+    : total > 0
+      ? (frame * 100) / total
+      : NaN;
+  if (Number.isFinite(p)) {
+    if (job) job.progress = p;
+    const bar = $("progressFill");
+    bar.parentElement.classList.remove("indeterminate");
+    bar.style.width = `${Math.max(0, Math.min(100, p))}%`;
+    $("progressPercent").textContent = `${p.toFixed(1)}%`;
+  }
+  const vals = {
+    elapsed: formatProgressTime(payload.elapsed ?? payload.elapsedTime),
+    eta: formatProgressTime(payload.eta),
+    speed: formatProgressNumber(payload.currentSpeed ?? payload.speed, true),
+    fps: formatProgressNumber(payload.currentFps ?? payload.fps),
+  };
+  for (const [key, id] of [
+    ["elapsed", "elapsedTime"],
+    ["eta", "eta"],
+    ["speed", "speed"],
+    ["fps", "fps"],
+  ])
+    if (vals[key] != null) $(id).textContent = String(vals[key]);
+  if (job) {
+    job.currentSpeed = vals.speed;
+    job.eta = vals.eta;
+    renderQueue();
+  }
+});
+async function initialize() {
+  try {
+    await loadSettings();
+    const restored = await bridge.invoke("load-queue");
+    queue = (Array.isArray(restored) ? restored : []).map((j) => ({
+      ...j,
+      file: j.file || j.inputPath,
+      inputPath: j.inputPath || j.file,
+      status:
+        j.status === "done" || j.status === "error" ? j.status : "pending",
+      error:
+        j.status === "running"
+          ? "Interrupted by app restart; ready to retry"
+          : j.error,
+    }));
+    queuePaused = queue.length > 0;
+    for (const j of queue) {
+      try {
+        j.missing = !(await bridge.invoke("file-status", j.file)).exists;
+      } catch {
+        j.missing = true;
+      }
+      if (j.missing && j.status === "pending")
+        j.error =
+          "Source file is missing. Edit, retry after restoring it, or remove this job.";
+    }
+    availableEncoders = await bridge.invoke("detect-encoders");
+    initEncoderSelect();
+    await persistNow();
+  } catch (e) {
+    notify(`Startup issue: ${e.message}`, "error");
+  }
+  $("versionLabel").textContent = await bridge
+    .invoke("get-app-version")
+    .catch(() => "Video Re-Encoder");
+  renderQueue();
+  if (!currentFile) setView("drop");
 }
-
-function formatDuration(seconds) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
+initialize();

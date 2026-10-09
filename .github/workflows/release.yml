@@ -8,89 +8,103 @@ on:
         required: true
         type: string
 
+permissions:
+  contents: read
+
 jobs:
-  # ── Pre-flight: read version, fail fast if it already has a release ─────────
   check-version:
-    name: Check version
+    name: Allocate release version
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.get-version.outputs.version }}
-      prev_version: ${{ steps.get-prev.outputs.prev_version }}
+      version: ${{ steps.version.outputs.version }}
+      prev_version: ${{ steps.previous.outputs.prev_version }}
     steps:
-      - name: Checkout
+      - name: Checkout dispatch commit
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
 
-      - name: Read version from package.json
-        id: get-version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run unit and release-script tests
+        run: npm test
+
+      - name: Allocate the next patch version once
+        id: version
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION=$(node scripts/prepare-build.js --next-version)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "📦 Version: $VERSION"
+          echo "Allocated release version: $VERSION"
 
-      - name: Fail if release already exists
+      - name: Fail if release or tag already exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          if gh release view "${{ steps.get-version.outputs.version }}" \
-               --repo "${{ github.repository }}" &>/dev/null; then
-            echo "::error::Release ${{ steps.get-version.outputs.version }} already exists." \
-                 " Bump the version in package.json before triggering this workflow."
+          if gh release view "$VERSION" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "::error::Release $VERSION already exists."
             exit 1
           fi
-          echo "✅ ${{ steps.get-version.outputs.version }} is new — proceeding."
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          if git ls-remote --exit-code --refs origin "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "::error::Git tag $VERSION already exists."
+            exit 1
+          fi
 
-      - name: Get previous release tag
-        id: get-prev
+      - name: Find previous release
+        id: previous
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          PREV=$(gh release list --repo "${{ github.repository }}" \
-                   --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+          PREV=$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)
           echo "prev_version=$PREV" >> "$GITHUB_OUTPUT"
-          echo "🔖 Previous release: ${PREV:-'(none)'}"
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
-  # ── Windows: NSIS installer + portable .exe ──────────────────────────────────
   build-windows:
     name: Build Windows
     needs: check-version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
       - run: npm ci
       - name: Build
-        run: npm run build:win # already sets CSC_IDENTITY_AUTO_DISCOVERY via `set`
+        run: npm run build:win -- --publish never
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          RECODR_BUILD_VERSION: ${{ needs.check-version.outputs.version }}
+      - name: Verify packaged version and names
+        run: node scripts/verify-build.js "${{ needs.check-version.outputs.version }}" windows
+      - uses: actions/upload-artifact@v4
         with:
           name: windows-artifacts
           path: release/*.exe
           if-no-files-found: error
 
-  # ── macOS Intel: DMG + ZIP ───────────────────────────────────────────────────
   build-mac:
-    name: Build macOS (universal)
+    name: Build macOS universal
     needs: check-version
-    runs-on: macos-latest # Apple Silicon runner; universal flag covers Intel too
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
       - run: npm ci
-      - name: Build
-        run: npx electron-builder --mac --universal
+      - name: Build universal app
+        run: npm run build:mac -- --universal --publish never
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          RECODR_BUILD_VERSION: ${{ needs.check-version.outputs.version }}
+      - name: Verify packaged version and names
+        run: node scripts/verify-build.js "${{ needs.check-version.outputs.version }}" mac
+      - uses: actions/upload-artifact@v4
         with:
           name: mac-artifacts
           path: |
@@ -98,27 +112,28 @@ jobs:
             release/*.zip
           if-no-files-found: error
 
-  # ── Linux: AppImage + DEB ────────────────────────────────────────────────────
   build-linux:
     name: Build Linux
     needs: check-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
-      - name: Install system deps (deb packaging)
+      - name: Install system dependencies
         run: sudo apt-get install -y fakeroot
       - run: npm ci
       - name: Build
-        run: npm run build:linux
+        run: npm run build:linux -- --publish never
         env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          RECODR_BUILD_VERSION: ${{ needs.check-version.outputs.version }}
+      - name: Verify packaged version and names
+        run: node scripts/verify-build.js "${{ needs.check-version.outputs.version }}" linux
+      - uses: actions/upload-artifact@v4
         with:
           name: linux-artifacts
           path: |
@@ -126,39 +141,57 @@ jobs:
             release/*.deb
           if-no-files-found: error
 
-  # ── Combine all artifacts and publish the release ────────────────────────────
   create-release:
-    name: Create GitHub Release
+    name: Publish GitHub Release
     needs: [check-version, build-windows, build-mac, build-linux]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true # flatten into a single directory
-
-      - name: List files to be released
-        run: ls -lh artifacts/
-
+          merge-multiple: true
+      - name: Verify release artifact set and names
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          shopt -s nullglob
+          files=(artifacts/*)
+          test "${#files[@]}" -ge 6 || { echo "Expected artifacts from all platforms"; exit 1; }
+          for file in "${files[@]}"; do
+            name=$(basename "$file")
+            [[ "$name" == "reCodr-$VERSION-windows-"* || "$name" == "reCodr-$VERSION-mac-"* || "$name" == "reCodr-$VERSION-linux-"* ]] || {
+              echo "Unexpected artifact name: $name"; exit 1;
+            }
+          done
+          printf '%s\n' "${files[@]}"
       - name: Build release notes
+        env:
+          RELEASE_NOTES: ${{ github.event.inputs.release_description }}
+          PREV_VERSION: ${{ needs.check-version.outputs.prev_version }}
+          VERSION: ${{ needs.check-version.outputs.version }}
         run: |
           printf '%s' "$RELEASE_NOTES" > /tmp/notes.md
           if [ -n "$PREV_VERSION" ]; then
             printf '\n\n**Full Changelog**: https://github.com/%s/compare/%s...%s\n' \
-              "${{ github.repository }}" "$PREV_VERSION" "${{ needs.check-version.outputs.version }}" \
-              >> /tmp/notes.md
+              "${{ github.repository }}" "$PREV_VERSION" "$VERSION" >> /tmp/notes.md
           fi
+      - name: Publish release on the dispatch commit
         env:
-          RELEASE_NOTES: ${{ github.event.inputs.release_description }}
-          PREV_VERSION: ${{ needs.check-version.outputs.prev_version }}
-
-      - name: Publish release
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.check-version.outputs.version }}
         run: |
-          gh release create "${{ needs.check-version.outputs.version }}" \
+          gh release create "$VERSION" \
             --repo "${{ github.repository }}" \
-            --title "reCodr ${{ needs.check-version.outputs.version }}" \
+            --target "${{ github.sha }}" \
+            --title "reCodr $VERSION" \
             --notes-file /tmp/notes.md \
             artifacts/*
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}

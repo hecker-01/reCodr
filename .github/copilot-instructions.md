@@ -20,15 +20,19 @@ npm run build
 npm run build:win    # Windows (portable + NSIS installer)
 npm run build:mac    # macOS (DMG + ZIP)
 npm run build:linux  # Linux (AppImage + DEB)
+
+# Built-in regressions (Electron smoke tests are optional)
+npm test
+npm run test:electron
 ```
 
-**Note:** There are no tests or linting configured in this project.
+Each local `npm run build*` advances the patch version once. CI supplies `RECODR_BUILD_VERSION` to keep every platform artifact on one release version. No linter is configured.
 
 ## Architecture
 
 ### Process Model
 
-This is a standard Electron two-process architecture:
+This Electron app uses a main process, an isolated preload bridge, and a renderer process:
 
 - **Main Process** (`main.js`) - Handles:
   - Window management and app lifecycle
@@ -36,6 +40,8 @@ This is a standard Electron two-process architecture:
   - Binary path resolution (system PATH or user-configured paths)
   - Hardware encoder detection
   - Power management (prevents sleep during encoding)
+- **Preload** (`preload.js`) - Exposes a narrow, validated IPC API to the renderer.
+- **Shared core** (`encoding-core.js`) - Builds ffmpeg argument arrays, checks container compatibility, and handles encoder family and output path logic.
 - **Renderer Process** (`renderer.js`) - Handles:
   - UI state management and DOM manipulation
   - File selection (drag-and-drop + file picker)
@@ -73,7 +79,7 @@ const encoderFamilies = {
 };
 ```
 
-**Key functions:**
+**Key functions in `encoding-core.js`:**
 
 - `getEncoderFamily(codec)` - Maps a codec string to its family (e.g., `"hevc_nvenc"` → `"nvenc"`)
 - `applyVideoEncodingArgs(args, codec, quality, preset)` - Adds encoder-specific flags based on family
@@ -84,7 +90,7 @@ const encoderFamilies = {
 - **NVENC**: Uses `-cq` (constant quality) and `-preset p1-p7`
 - **AMF**: Uses `-qp_i` / `-qp_p` and maps presets to `speed`/`balanced`/`quality`
 - **QSV**: Uses `-global_quality` and standard preset names
-- **VideoToolbox**: `h264_videotoolbox` uses `-q:v` (1-100 scale), but `hevc_videotoolbox` requires `-b:v` bitrate
+- **VideoToolbox**: H.264 quality maps to `-q:v` (1-100 scale); HEVC uses bitrate mode where FFmpeg lacks HEVC quality-scale support, mapping quality to an approximate bitrate
 - **Software**: Uses `-crf` and standard x264/x265 presets
 
 ## Encoder Detection Logic
@@ -151,7 +157,7 @@ Function: `resolveBinaryPath(name)` in main.js
 
 ### VideoToolbox Codec Parameters
 
-`hevc_videotoolbox` does NOT support `-q:v` (quality scale). It requires bitrate mode with `-b:v`. Only `h264_videotoolbox` supports `-q:v`.
+H.264 quality maps to `-q:v` (1-100). HEVC uses bitrate mode where FFmpeg lacks HEVC quality-scale support; the selected quality maps to an approximate bitrate.
 
 ### Power Management
 

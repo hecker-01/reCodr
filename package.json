@@ -1,21 +1,23 @@
 {
   "name": "recodr",
-  "version": "1.7.1",
+  "version": "1.7.11",
   "description": "Video re-encoder with GUI using ffmpeg",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "prebuild": "npm version patch --no-git-tag-version",
-    "build": "set CSC_IDENTITY_AUTO_DISCOVERY=false && electron-builder",
-    "prebuild:win": "npm version patch --no-git-tag-version",
-    "build:win": "set CSC_IDENTITY_AUTO_DISCOVERY=false && electron-builder --win",
-    "prebuild:mac": "npm version patch --no-git-tag-version",
-    "build:mac": "electron-builder --mac",
-    "prebuild:linux": "npm version patch --no-git-tag-version",
-    "build:linux": "electron-builder --linux",
-    "prebuild:full": "npm version patch --no-git-tag-version",
-    "build:full": "set CSC_IDENTITY_AUTO_DISCOVERY=false && electron-builder --win --mac --linux"
+    "test": "node scripts/run-unit-tests.js",
+    "test:electron": "node scripts/run-electron-smoke.js",
+    "prebuild": "node scripts/prepare-build.js",
+    "build": "node scripts/build.js",
+    "prebuild:win": "node scripts/prepare-build.js",
+    "build:win": "node scripts/build.js --win",
+    "prebuild:mac": "node scripts/prepare-build.js",
+    "build:mac": "node scripts/build.js --mac",
+    "prebuild:linux": "node scripts/prepare-build.js",
+    "build:linux": "node scripts/build.js --linux",
+    "prebuild:full": "node scripts/prepare-build.js",
+    "build:full": "node scripts/build.js --win --mac --linux"
   },
   "keywords": [
     "video",
@@ -37,7 +39,7 @@
       "output": "release"
     },
     "files": [
-      "main.js",
+      "*.js",
       "index.html",
       "renderer.js",
       "styles.css",
@@ -66,28 +68,31 @@
       "icon": "assets/icon.ico"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-${arch}-portable.${ext}"
+      "artifactName": "${productName}-${version}-windows-${arch}-portable.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
-      "installerHeaderIcon": "assets/icon.ico"
+      "installerHeaderIcon": "assets/icon.ico",
+      "artifactName": "${productName}-${version}-windows-${arch}-setup.${ext}"
     },
     "mac": {
       "target": [
         "dmg",
         "zip"
       ],
-      "icon": "assets/icon.icns"
+      "icon": "assets/icon.icns",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "linux": {
       "target": [
         "AppImage",
         "deb"
       ],
-      "icon": "assets/icon.png"
+      "icon": "assets/icon.png",
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}"
     }
   }
 }
