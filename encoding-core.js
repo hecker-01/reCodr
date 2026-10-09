@@ -694,7 +694,12 @@
           dispositionFlags(t, idx === subtitleDefault),
         );
     });
-    if (options.duration > 0) args.push("-t", String(options.duration));
+    // Only bounded encodes (samples) get -t. ffprobe's container duration can be wrong
+    // (e.g. MPEG-TS timestamp resets), and trimming to it silently truncates full encodes.
+    if (options.limitDuration > 0)
+      args.push("-t", String(options.limitDuration));
+    // Sparse subtitle/attachment streams can overflow FFmpeg's default muxing queue mid-encode.
+    args.push("-max_muxing_queue_size", "4096");
     args.push("-progress", "pipe:1", "-stats_period", "0.25", output);
     return args;
   }

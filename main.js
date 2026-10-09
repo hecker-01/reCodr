@@ -7,6 +7,7 @@ const {
   dialog,
   shell,
   Notification,
+  nativeTheme,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -153,11 +154,23 @@ function getWindowIconPath() {
   ];
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
+// Matches --bg-primary per theme so the window does not flash before CSS loads.
+function windowBackground() {
+  const backgrounds = {
+    dark: "#0e1014",
+    light: "#f4f5f7",
+    "catppuccin-mocha": "#1e1e2e",
+    "catppuccin-latte": "#eff1f5",
+  };
+  const theme = settings.appearance?.theme || "system";
+  if (theme !== "system") return backgrounds[theme] || backgrounds.dark;
+  return nativeTheme.shouldUseDarkColors ? backgrounds.dark : backgrounds.light;
+}
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 900,
-    backgroundColor: "#1a1a2e",
+    backgroundColor: windowBackground(),
     icon: getWindowIconPath(),
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -335,6 +348,7 @@ async function validateEncodedMovie(
   frameCount,
   expectedFrames,
   job,
+  expectedStreams = null,
 ) {
   const metadata = await probeVideo(outputPath, job);
   const video = (metadata.streams || []).find(
@@ -356,6 +370,20 @@ async function validateEncodedMovie(
     throw new Error(
       `Encoding produced only ${frameCount} video frames; expected about ${expectedFrames}. The incomplete output remains available for inspection.`,
     );
+  if (expectedStreams) {
+    const missing = [];
+    for (const [type, expected] of Object.entries(expectedStreams)) {
+      const found = (metadata.streams || []).filter(
+        (s) => s.codec_type === type,
+      ).length;
+      if (found < expected)
+        missing.push(`${expected} ${type} expected, ${found} found`);
+    }
+    if (missing.length)
+      throw new Error(
+        `Output is missing streams (${missing.join("; ")}). The incomplete output remains available for inspection.`,
+      );
+  }
   return { metadata, actualDuration };
 }
 function getVideoMetrics(metadata) {
@@ -600,6 +628,7 @@ async function runEncode(
             parser.stats.frame,
             totalFrames,
             job,
+            options.expectedStreams,
           )
         : { metadata: null };
     assertNotCancelled(job);
@@ -1111,6 +1140,13 @@ function prepareTrackOptions(options, inputPath, probe) {
     subtitleTracks: enrich(options.subtitleTracks, "subtitle"),
   };
 }
+function expectedStreamsFor(options, attachments) {
+  return {
+    audio: (options.audioTracks || []).length,
+    subtitle: (options.subtitleTracks || []).length,
+    attachment: attachments.length,
+  };
+}
 function softwareEncoderFor(codec) {
   const base = core.getCodecBase(codec);
   if (base === "hevc") return "libx265";
@@ -1137,108 +1173,87 @@ handle("encode-video", async (event, input, output, options = {}) => {
       effective.attachmentTracks || [],
       job,
     );
+    const measured = {
+      duration,
+      expectedFrames,
+      expectedStreams: expectedStreamsFor(effective, attachments.tracks),
+    };
     try {
-      const initialArgs = core.buildEncodeArgs(
-        inputPath,
-        output,
-        effective,
-        attachments.tracks,
-        effective.decodeMode || "hardware",
-      );
       const family = core.getEncoderFamily(effective.videoCodec);
-      try {
-        return await runEncode(
+      const decodeMode = effective.decodeMode || "hardware";
+      const attempt = (options, mode, notice) =>
+        runEncode(
           event.sender,
           job,
           inputPath,
           output,
-          initialArgs,
-          {
-            ...effective,
-            duration,
-            expectedFrames,
-            notice: effective.notice || "",
-          },
+          core.buildEncodeArgs(
+            inputPath,
+            output,
+            options,
+            attachments.tracks,
+            mode,
+          ),
+          { ...options, ...measured, decodeMode: mode, notice },
         );
+      const failures = [];
+      try {
+        return await attempt(effective, decodeMode, effective.notice || "");
       } catch (error) {
-        const automatic =
-          effective.autoEncoder === true || effective.encoderFamily === "auto";
-        const softwareCodec = softwareEncoderFor(effective.videoCodec);
-        if (
-          !automatic ||
-          !softwareCodec ||
-          !["nvenc", "amf", "qsv", "videotoolbox"].includes(family) ||
-          job.cancelled
-        )
-          throw error;
-        const cpuNotice = `Hardware encoding with ${effective.videoCodec} failed. Retrying with the same encoder using CPU decoding.`;
+        if (job.cancelled) throw error;
+        failures.push(error);
+      }
+      // Hardware decoding can fail mid-stream on sources NVDEC/QSV/VideoToolbox
+      // cannot handle; retrying with CPU decoding keeps the chosen encoder.
+      const notices = [];
+      if (
+        decodeMode === "hardware" &&
+        ["nvenc", "qsv", "videotoolbox"].includes(family)
+      ) {
+        const cpuNotice = `Hardware decoding failed with ${effective.videoCodec}. Retrying with the same encoder using CPU decoding.`;
+        notices.push(cpuNotice);
         safeSend(event.sender, "encode-notice", {
           jobId: job.id,
           message: cpuNotice,
         });
         try {
-          const cpuDecodeArgs = core.buildEncodeArgs(
-            inputPath,
-            output,
-            effective,
-            attachments.tracks,
-            "cpu",
-          );
-          return await runEncode(
-            event.sender,
-            job,
-            inputPath,
-            output,
-            cpuDecodeArgs,
-            {
-              ...effective,
-              duration,
-              expectedFrames,
-              decodeMode: "cpu",
-              notice: cpuNotice,
-            },
-          );
-        } catch (cpuDecodeError) {
-          if (job.cancelled) throw cpuDecodeError;
-          const softwareNotice = `CPU decoding with ${effective.videoCodec} also failed. Retrying with ${softwareCodec} on the CPU using the same ${core.getCodecBase(effective.videoCodec).toUpperCase()} format.`;
-          safeSend(event.sender, "encode-notice", {
-            jobId: job.id,
-            message: softwareNotice,
-          });
-          const notice = `${cpuNotice} ${softwareNotice}`;
-          const fallbackOptions = {
-            ...effective,
-            videoCodec: softwareCodec,
-            encoderFamily: "software",
-            decodeMode: "cpu",
-          };
-          const fallbackArgs = core.buildEncodeArgs(
-            inputPath,
-            output,
-            fallbackOptions,
-            attachments.tracks,
-            "cpu",
-          );
-          try {
-            return await runEncode(
-              event.sender,
-              job,
-              inputPath,
-              output,
-              fallbackArgs,
-              {
-                ...fallbackOptions,
-                duration,
-                expectedFrames,
-                notice,
-              },
-            );
-          } catch (softwareError) {
-            if (job.cancelled) throw softwareError;
-            softwareError.message = `${softwareError.message}\nAutomatic hardware retries failed: ${error.message}; CPU decode retry failed: ${cpuDecodeError.message}`;
-            throw softwareError;
-          }
+          return await attempt(effective, "cpu", cpuNotice);
+        } catch (error) {
+          if (job.cancelled) throw error;
+          failures.push(error);
         }
+      }
+      const automatic =
+        effective.autoEncoder === true || effective.encoderFamily === "auto";
+      const softwareCodec = softwareEncoderFor(effective.videoCodec);
+      const lastError = failures[failures.length - 1];
+      if (
+        !automatic ||
+        !softwareCodec ||
+        !["nvenc", "amf", "qsv", "videotoolbox"].includes(family)
+      ) {
+        if (failures.length > 1)
+          lastError.message = `${lastError.message}
+Earlier attempt failed: ${failures[0].message}`;
+        throw lastError;
+      }
+      const softwareNotice = `${effective.videoCodec} failed. Retrying with ${softwareCodec} on the CPU using the same ${core.getCodecBase(effective.videoCodec).toUpperCase()} format.`;
+      notices.push(softwareNotice);
+      safeSend(event.sender, "encode-notice", {
+        jobId: job.id,
+        message: softwareNotice,
+      });
+      try {
+        return await attempt(
+          { ...effective, videoCodec: softwareCodec, encoderFamily: "software" },
+          "cpu",
+          notices.join(" "),
+        );
+      } catch (softwareError) {
+        if (job.cancelled) throw softwareError;
+        softwareError.message = `${softwareError.message}
+Automatic hardware retries failed: ${failures.map((e) => e.message).join("; ")}`;
+        throw softwareError;
       }
     } finally {
       attachments.cleanup();
@@ -1410,6 +1425,7 @@ handle("encode-sample", async (event, input, output, options = {}) => {
       ...effective,
       sampleStart,
       duration: actualSampleDuration,
+      limitDuration: actualSampleDuration,
       totalFrames: Math.round(actualSampleDuration * metrics.fps),
     };
     const attachments = await prepareAttachments(
@@ -1434,6 +1450,10 @@ handle("encode-sample", async (event, input, output, options = {}) => {
         {
           ...sampleOptions,
           expectedFrames: sampleOptions.totalFrames,
+          expectedStreams: expectedStreamsFor(
+            sampleOptions,
+            attachments.tracks,
+          ),
           validate: true,
         },
       );

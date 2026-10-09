@@ -272,3 +272,44 @@ test("settings core is available through its browser UMD global", () => {
     1,
   );
 });
+
+test("appearance theme defaults to system and rejects unknown themes", () => {
+  assert.equal(settings.DEFAULT_SETTINGS.appearance.theme, "system");
+  assert.equal(
+    settings.normalizeSettings({ appearance: { theme: "catppuccin-mocha" } })
+      .appearance.theme,
+    "catppuccin-mocha",
+  );
+  assert.equal(
+    settings.normalizeSettings({ appearance: { theme: "neon" } }).appearance
+      .theme,
+    "system",
+  );
+});
+
+test("language inclusion matches aliases, keeps untagged tracks, and never drops all audio", () => {
+  assert.equal(settings.canonicalLanguage("nld"), "dut");
+  assert.equal(settings.canonicalLanguage("en-US"), "eng");
+  const subs = [{ language: "nld" }, { language: "fre" }, { language: "und" }, {}];
+  assert.deepEqual(
+    settings.includedByLanguage(subs, ["eng", "dut"], "subtitle").included,
+    [true, false, true, true],
+  );
+  const audio = [{ language: "ger" }, { language: "fre" }];
+  assert.deepEqual(settings.includedByLanguage(audio, ["eng", "jpn"], "audio"), {
+    included: [true, true],
+    fallback: true,
+  });
+  assert.deepEqual(
+    settings.includedByLanguage(
+      [{ language: "ger" }, { language: "jpn" }],
+      ["jpn"],
+      "audio",
+    ).included,
+    [false, true],
+  );
+  assert.deepEqual(
+    settings.includedByLanguage([{ language: "fre" }], ["eng"], "subtitle"),
+    { included: [false], fallback: false },
+  );
+});

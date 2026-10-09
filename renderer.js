@@ -3,6 +3,22 @@ const bridge = window.recodr;
 const core = window.ReCodrCore;
 const settingsCore = window.ReCodrSettings;
 const $ = (id) => document.getElementById(id);
+const THEME_KEY = "recodr-theme";
+const lightQuery = window.matchMedia("(prefers-color-scheme: light)");
+// The chosen theme is cached locally so the first paint already uses it.
+function applyTheme(theme) {
+  const resolved =
+    theme === "system" || !theme ? (lightQuery.matches ? "light" : "dark") : theme;
+  document.documentElement.dataset.theme = resolved;
+  try {
+    localStorage.setItem(THEME_KEY, theme || "system");
+  } catch (_) {}
+}
+try {
+  applyTheme(localStorage.getItem(THEME_KEY) || "system");
+} catch (_) {
+  applyTheme("system");
+}
 const ui = {
   drop: $("dropZone"),
   settings: $("settingsView"),
@@ -200,7 +216,7 @@ async function openFile(file) {
   );
   for (const notice of [...ui.notices.children]) {
     if (
-      /^(Embedded subtitle fonts are preserved|Stereo conversion uses )/.test(
+      /^(Embedded subtitle fonts are preserved|Stereo conversion uses |No audio track matches )/.test(
         notice.textContent || "",
       )
     )
@@ -270,13 +286,19 @@ function displayTracks() {
     activeSettings?.audio?.includeLanguages || prefs.audioLangs || [];
   const subtitleLanguages =
     activeSettings?.subtitles?.includeLanguages || prefs.subLangs || [];
+  const audioIncluded = settingsCore.includedByLanguage(
+    audio.map((stream) => ({ language: stream.tags?.language })),
+    audioLanguages,
+    "audio",
+  );
+  const subtitleIncluded = settingsCore.includedByLanguage(
+    subs.map((stream) => ({ language: stream.tags?.language })),
+    subtitleLanguages,
+    "subtitle",
+  );
   audioTracks = audio.map((stream, i) => ({
     index: stream.index,
-    enabled:
-      !audioLanguages.length ||
-      audioLanguages.includes(
-        String(stream.tags?.language || "und").toLowerCase(),
-      ),
+    enabled: audioIncluded.included[i],
     action: activeSettings?.audio?.action || prefs.defaultAudioAction || "copy",
     bitrate: activeSettings?.audio?.bitrate || 192,
     channels: stream.channels || 2,
@@ -307,7 +329,7 @@ function displayTracks() {
       track.bitrate = activeSettings.audio.stereoBitrate;
     }
   });
-  subtitleTracks = subs.map((stream) => {
+  subtitleTracks = subs.map((stream, i) => {
     const image = [
       "hdmv_pgs_subtitle",
       "dvd_subtitle",
@@ -317,11 +339,7 @@ function displayTracks() {
     ].includes(String(stream.codec_name || "").toLowerCase());
     return {
       index: stream.index,
-      enabled:
-        !subtitleLanguages.length ||
-        subtitleLanguages.includes(
-          String(stream.tags?.language || "und").toLowerCase(),
-        ),
+      enabled: subtitleIncluded.included[i],
       action: image ? "copy" : activeSettings?.subtitles?.action || "copy",
       isImage: image,
       language: String(stream.tags?.language || "und").toLowerCase(),
@@ -361,11 +379,18 @@ function displayTracks() {
       "Image subtitles (PGS/VobSub) can only be copied; text conversion is unavailable.",
       "warning",
     );
+  if (audioIncluded.fallback) notifyAudioFallback(audioLanguages);
   if (attachmentTracks.some((t) => t.enabled && t.isFont))
     notify(
       "Embedded subtitle fonts are preserved. FFmpeg may prepare these fonts before encoding.",
       "info",
     );
+}
+function notifyAudioFallback(languages) {
+  notify(
+    `No audio track matches your included languages (${languages.join(", ")}), so all audio tracks are included.`,
+    "warning",
+  );
 }
 function selectMarkup(kind, i, value, options, disabled = false) {
   return (
@@ -1412,6 +1437,7 @@ function fillSettingsForm(value) {
   $("clearSubtitleNames").checked = s.naming.clearNames.includes("subtitle");
   syncClearNameInputs();
   $("debugModeToggle").checked = s.tools.debugMode;
+  $("themeSelect").value = s.appearance.theme;
   updateTemplatePreview();
   return s;
 }
@@ -1455,6 +1481,7 @@ function collectSettingsForm() {
       ].filter(Boolean),
     },
     tools: { debugMode: $("debugModeToggle").checked },
+    appearance: { theme: $("themeSelect").value },
   });
 }
 function setSettingsError(message) {
@@ -1596,6 +1623,7 @@ async function loadSettings() {
   };
   settingsDraft = structuredClone(savedSettings);
   fillSettingsForm(settingsDraft);
+  applyTheme(savedSettings.appearance.theme);
 }
 async function openSettings() {
   settingsDraft = structuredClone(
@@ -1616,6 +1644,7 @@ function closeSettingsOverlay() {
 function cancelSettings() {
   settingsDraft = structuredClone(savedSettings);
   fillSettingsForm(settingsDraft);
+  applyTheme(savedSettings.appearance.theme);
   setSettingsError("");
   closeSettingsOverlay();
 }
@@ -1646,6 +1675,7 @@ async function saveSettings() {
     };
     savedSettings = next;
     settingsDraft = structuredClone(next);
+    applyTheme(next.appearance.theme);
     closeSettingsOverlay();
     notify("Settings saved for future files.", "success");
   } catch (error) {
@@ -1655,6 +1685,7 @@ async function saveSettings() {
 function resetSettingsDraft() {
   fillSettingsForm(settingsCore.DEFAULT_SETTINGS);
   settingsDraft = structuredClone(settingsCore.DEFAULT_SETTINGS);
+  applyTheme(settingsDraft.appearance.theme);
   setSettingsError("");
 }
 function applySavedDefaultsToCurrentFile() {
@@ -1690,10 +1721,20 @@ function applySavedDefaultsToCurrentFile() {
   outputDirectory = savedSettings.video.outputDirectory;
   $("outputDirectoryLabel").textContent =
     outputDirectory || "Same folder as source";
-  audioTracks.forEach((track) => {
-    track.enabled =
-      !savedSettings.audio.includeLanguages.length ||
-      savedSettings.audio.includeLanguages.includes(track.language);
+  const audioIncluded = settingsCore.includedByLanguage(
+    audioTracks,
+    savedSettings.audio.includeLanguages,
+    "audio",
+  );
+  const subtitleIncluded = settingsCore.includedByLanguage(
+    subtitleTracks,
+    savedSettings.subtitles.includeLanguages,
+    "subtitle",
+  );
+  if (audioIncluded.fallback)
+    notifyAudioFallback(savedSettings.audio.includeLanguages);
+  audioTracks.forEach((track, i) => {
+    track.enabled = audioIncluded.included[i];
     track.action = savedSettings.audio.action;
     track.bitrate = savedSettings.audio.bitrate;
     track.channelsMode = savedSettings.audio.channelsMode;
@@ -1703,10 +1744,8 @@ function applySavedDefaultsToCurrentFile() {
     }
     track.titleConfig = titleConfigFor("audio", savedSettings);
   });
-  subtitleTracks.forEach((track) => {
-    track.enabled =
-      !savedSettings.subtitles.includeLanguages.length ||
-      savedSettings.subtitles.includeLanguages.includes(track.language);
+  subtitleTracks.forEach((track, i) => {
+    track.enabled = subtitleIncluded.included[i];
     track.action = savedSettings.subtitles.action;
     if (track.isImage && track.action !== "copy") track.action = "copy";
     track.titleConfig = titleConfigFor("subtitle", savedSettings);
@@ -2041,6 +2080,7 @@ document.addEventListener("change", (e) => {
         : $("defaultEncoderFamily").value;
     setPresetOptions(family, $("defaultVideoCodec").value, "auto");
   }
+  if (t.id === "themeSelect") applyTheme(t.value);
   if (t.id.startsWith("template")) updateTemplatePreview();
   if (t.id.startsWith("clear") && t.type === "checkbox") {
     syncClearNameInputs();
@@ -2230,6 +2270,12 @@ bridge.on("encode-progress", (payload) => {
     job.eta = vals.eta;
     updateRunningQueueItem(job);
   }
+});
+lightQuery.addEventListener("change", () => {
+  const theme = settingsOpen
+    ? $("themeSelect").value
+    : savedSettings?.appearance?.theme;
+  if (theme === "system") applyTheme("system");
 });
 async function detectEncoders() {
   const subtitle = $("dropSubtitle");

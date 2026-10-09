@@ -438,6 +438,15 @@
             >
               Tools
             </button>
+            <button
+              type="button"
+              class="settings-tab"
+              role="tab"
+              aria-selected="false"
+              data-settings-tab="appearance"
+            >
+              Appearance
+            </button>
           </nav>
           <div class="settings-modal-body">
             <section class="settings-page" data-settings-page="video">
@@ -702,6 +711,25 @@
                 class="template-preview"
                 aria-live="polite"
               ></p>
+            </section>
+            <section
+              class="settings-page hidden"
+              data-settings-page="appearance"
+            >
+              <p class="config-note">
+                System follows your operating system's light or dark mode.
+              </p>
+              <div class="settings-grid">
+                <label class="setting-field"
+                  >Theme<select id="themeSelect" class="info-value-select">
+                    <option value="system">System</option>
+                    <option value="dark">Dark</option>
+                    <option value="light">Light</option>
+                    <option value="catppuccin-mocha">Catppuccin Mocha</option>
+                    <option value="catppuccin-latte">Catppuccin Latte</option>
+                  </select></label
+                >
+              </div>
             </section>
             <section class="settings-page hidden" data-settings-page="tools">
               <div class="settings-section">

@@ -40,6 +40,7 @@
       clearNames: Object.freeze([]),
     }),
     tools: Object.freeze({ debugMode: false }),
+    appearance: Object.freeze({ theme: "system" }),
   });
 
   const ENUMS = {
@@ -48,6 +49,7 @@
     outputFormat: ["mkv", "mp4", "mov", "webm"],
     audioAction: ["copy", "aac", "opus", "ac3"],
     subtitleAction: ["copy", "srt", "ass", "mov_text", "webvtt"],
+    theme: ["system", "dark", "light", "catppuccin-mocha", "catppuccin-latte"],
     defaultPolicy: ["language", "source", "none"],
   };
 
@@ -91,6 +93,10 @@
       source.naming && typeof source.naming === "object" ? source.naming : {};
     const tools =
       source.tools && typeof source.tools === "object" ? source.tools : {};
+    const appearance =
+      source.appearance && typeof source.appearance === "object"
+        ? source.appearance
+        : {};
     const normalizedCodec = choice(
       video.codec,
       ENUMS.codec,
@@ -174,6 +180,13 @@
           : [],
       },
       tools: { debugMode: tools.debugMode === true },
+      appearance: {
+        theme: choice(
+          appearance.theme,
+          ENUMS.theme,
+          DEFAULT_SETTINGS.appearance.theme,
+        ),
+      },
     };
   }
 
@@ -196,11 +209,66 @@
     });
   }
 
+  // Containers tag the same language differently (ISO 639-1, 639-2/B, 639-2/T, names).
+  const LANGUAGE_GROUPS = [
+    ["eng", "en", "english"],
+    ["jpn", "ja", "japanese"],
+    ["dut", "nld", "nl", "dutch", "flemish"],
+    ["ger", "deu", "de", "german"],
+    ["fre", "fra", "fr", "french"],
+    ["spa", "es", "spanish"],
+    ["ita", "it", "italian"],
+    ["por", "pt", "portuguese"],
+    ["rus", "ru", "russian"],
+    ["chi", "zho", "zh", "chinese"],
+    ["kor", "ko", "korean"],
+    ["ara", "ar", "arabic"],
+    ["pol", "pl", "polish"],
+    ["swe", "sv", "swedish"],
+    ["nor", "nob", "nno", "no", "nb", "nn", "norwegian"],
+    ["dan", "da", "danish"],
+    ["fin", "fi", "finnish"],
+    ["tur", "tr", "turkish"],
+    ["hin", "hi", "hindi"],
+    ["tha", "th", "thai"],
+    ["vie", "vi", "vietnamese"],
+    ["ind", "id", "indonesian"],
+    ["heb", "he", "hebrew"],
+    ["gre", "ell", "el", "greek"],
+    ["cze", "ces", "cs", "czech"],
+    ["hun", "hu", "hungarian"],
+    ["rum", "ron", "ro", "romanian"],
+    ["ukr", "uk", "ukrainian"],
+  ];
+  const LANGUAGE_ALIASES = new Map(
+    LANGUAGE_GROUPS.flatMap((group) => group.map((code) => [code, group[0]])),
+  );
   function canonicalLanguage(value) {
-    return String(value || "")
+    const code = String(value || "")
       .trim()
       .toLowerCase()
       .split(/[-_]/)[0];
+    return LANGUAGE_ALIASES.get(code) || code;
+  }
+  function isUnknownLanguage(value) {
+    const code = canonicalLanguage(value);
+    return !code || code === "und" || code === "unk" || code === "mis";
+  }
+  // Which tracks a language filter includes. Untagged tracks are kept, and for audio
+  // every track is kept when none match so an encode never silently loses all audio.
+  function includedByLanguage(tracks = [], languages = [], type = "audio") {
+    const wanted = languageList(languages).map(canonicalLanguage);
+    const list = Array.isArray(tracks) ? tracks : [];
+    if (!wanted.length)
+      return { included: list.map(() => true), fallback: false };
+    const included = list.map(
+      (track) =>
+        isUnknownLanguage(track?.language) ||
+        wanted.includes(canonicalLanguage(track?.language)),
+    );
+    if (type === "audio" && list.length && !included.some(Boolean))
+      return { included: list.map(() => true), fallback: true };
+    return { included, fallback: false };
   }
   function resolveDefaultTracks(
     tracks = [],
@@ -299,5 +367,7 @@
     renderNameTemplate,
     resolveTitle,
     normalizeAudioTrack,
+    canonicalLanguage,
+    includedByLanguage,
   };
 });

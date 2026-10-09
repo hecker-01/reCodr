@@ -735,3 +735,35 @@ test("input extensions are lowercase and include common containers", () => {
     assert.ok(core.INPUT_EXTENSIONS.includes(ext));
   for (const ext of core.INPUT_EXTENSIONS) assert.equal(ext, ext.toLowerCase());
 });
+
+test("full encodes are never trimmed to the probed duration; samples are", () => {
+  const base = {
+    videoCodec: "libx265",
+    videoQuality: "22",
+    outputFormat: "mkv",
+    audioTracks: [],
+    subtitleTracks: [],
+  };
+  const full = core.buildEncodeArgs("in.ts", "out.mkv", {
+    ...base,
+    duration: 20.02,
+  });
+  assert.ok(!full.includes("-t"), "a wrong container duration must not truncate the output");
+  const sample = core.buildEncodeArgs("in.ts", "out.mkv", {
+    ...base,
+    sampleStart: 5,
+    duration: 30,
+    limitDuration: 30,
+  });
+  assert.equal(sample[sample.indexOf("-t") + 1], "30");
+});
+
+test("encode args raise the muxing queue limit for sparse streams", () => {
+  const args = core.buildEncodeArgs("in.mkv", "out.mkv", {
+    videoCodec: "hevc_nvenc",
+    videoQuality: "22",
+    outputFormat: "mkv",
+  });
+  assert.equal(args[args.indexOf("-max_muxing_queue_size") + 1], "4096");
+  assert.equal(args[args.length - 1], "out.mkv");
+});
