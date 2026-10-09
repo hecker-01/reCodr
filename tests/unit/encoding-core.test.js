@@ -707,3 +707,63 @@ test("MKV rejects mov_text tracks while allowing valid ASS and SRT conversions",
   assert.ok(build("subrip", "srt").includes("srt"));
   assert.ok(build("subrip", "ass").includes("ass"));
 });
+
+test("presetsFor returns family- and codec-specific presets with the default first", () => {
+  assert.equal(core.presetsFor("nvenc", "hevc_nvenc")[0], "p4");
+  assert.deepEqual(core.presetsFor("amf", "h264_amf"), [
+    "balanced",
+    "speed",
+    "quality",
+  ]);
+  assert.deepEqual(core.presetsFor("videotoolbox", "hevc_videotoolbox"), [
+    "none",
+  ]);
+  assert.deepEqual(core.presetsFor("software", "libvpx-vp9"), ["4", "3", "5", "6"]);
+  assert.deepEqual(core.presetsFor("software", "vp9"), ["4", "3", "5", "6"]);
+  assert.deepEqual(core.presetsFor("software", "libsvtav1"), ["6", "4", "8"]);
+  assert.equal(core.presetsFor("software", "libx265")[0], "medium");
+  assert.ok(core.presetsFor("software", "libx264").includes("veryslow"));
+});
+
+test("presetsFor returns a fresh array each call", () => {
+  core.presetsFor("software", "libx264").push("bogus");
+  assert.ok(!core.presetsFor("software", "libx264").includes("bogus"));
+});
+
+test("input extensions are lowercase and include common containers", () => {
+  for (const ext of ["mkv", "mp4", "mov", "webm", "m2ts"])
+    assert.ok(core.INPUT_EXTENSIONS.includes(ext));
+  for (const ext of core.INPUT_EXTENSIONS) assert.equal(ext, ext.toLowerCase());
+});
+
+test("full encodes are never trimmed to the probed duration; samples are", () => {
+  const base = {
+    videoCodec: "libx265",
+    videoQuality: "22",
+    outputFormat: "mkv",
+    audioTracks: [],
+    subtitleTracks: [],
+  };
+  const full = core.buildEncodeArgs("in.ts", "out.mkv", {
+    ...base,
+    duration: 20.02,
+  });
+  assert.ok(!full.includes("-t"), "a wrong container duration must not truncate the output");
+  const sample = core.buildEncodeArgs("in.ts", "out.mkv", {
+    ...base,
+    sampleStart: 5,
+    duration: 30,
+    limitDuration: 30,
+  });
+  assert.equal(sample[sample.indexOf("-t") + 1], "30");
+});
+
+test("encode args raise the muxing queue limit for sparse streams", () => {
+  const args = core.buildEncodeArgs("in.mkv", "out.mkv", {
+    videoCodec: "hevc_nvenc",
+    videoQuality: "22",
+    outputFormat: "mkv",
+  });
+  assert.equal(args[args.indexOf("-max_muxing_queue_size") + 1], "4096");
+  assert.equal(args[args.length - 1], "out.mkv");
+});

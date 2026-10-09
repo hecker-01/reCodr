@@ -207,7 +207,7 @@ app.once("browser-window-created", (_event, window) => {
         ),
         0,
       );
-      await run(`processFile(${JSON.stringify(fixture)})`);
+      await run(`openFile(${JSON.stringify(fixture)})`);
       assert.equal(await run("Boolean(window.__metadataInjected)"), false);
       assert.equal(
         await run("document.querySelector('.track-name img') !== null"),
@@ -564,7 +564,7 @@ app.once("browser-window-created", (_event, window) => {
       console.log(
         "PASS: Opus 5.1 to AAC stereo, Unicode names, cleared titles, filtered defaults and forced flags",
       );
-      await run(`processFile(${JSON.stringify(trackFixture)})`);
+      await run(`openFile(${JSON.stringify(trackFixture)})`);
       await run(
         `document.querySelector('[data-action="quick-stereo"][data-index="0"]').click()`,
       );
@@ -661,7 +661,7 @@ app.once("browser-window-created", (_event, window) => {
         "document.getElementById('resetSettingsBtn').click();document.getElementById('cancelSettingsBtn').click()",
       );
       assert.equal((await call("get-settings")).video.quality, "24");
-      await run(`processFile(${JSON.stringify(trackFixture)})`);
+      await run(`openFile(${JSON.stringify(trackFixture)})`);
       assert.equal(await run("currentTitles.movieTitle.mode"), "clear");
       assert.equal(await run("currentTitles.videoTitle.mode"), "clear");
       assert.equal(

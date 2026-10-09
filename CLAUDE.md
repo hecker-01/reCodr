@@ -85,6 +85,9 @@ Audio/subtitle tracks:
 
 - `powerSaveBlocker.start('prevent-app-suspension')` is refcounted by `activeEncodeJobs` — every start needs a matching stop on job finish/error, otherwise the system never sleeps again.
 - Renderer tracks `commandModified`: if the user edits the ffmpeg command preview, do not silently overwrite it when settings change — warn first.
+- Never pass `-t` to full encodes. ffprobe's container duration can be wrong (MPEG-TS timestamp resets, bad headers), and trimming to it silently truncates the output. Only samples set `limitDuration`. Output validation checks duration, frame count, and that every selected audio/subtitle/attachment stream is present.
+- Language filters go through `settingsCore.includedByLanguage`: aliases (`dut`/`nld`/`nl`) match, untagged (`und`) tracks are kept, and audio falls back to all tracks when none match.
+- Themes are CSS variable sets on `:root[data-theme=…]` in `styles.css`; use the tokens (`--accent`, `--danger`, `--info`, `color-mix(...)`) rather than literal colors. Default is `system` (dark/light); Catppuccin is opt-in. `windowBackground()` in `main.js` mirrors each theme's `--bg-primary`.
 - MKV is the default output container. MP4/MOV and WebM apply stream compatibility checks. Output defaults to the source folder; name collisions receive a numbered filename rather than overwriting an existing file. Samples use a `_sample` suffix. Restored queue work waits for an explicit start, missing sources are flagged, and failed jobs can be retried.
 
 ## Build and release versioning

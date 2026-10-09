@@ -3,6 +3,22 @@ const bridge = window.recodr;
 const core = window.ReCodrCore;
 const settingsCore = window.ReCodrSettings;
 const $ = (id) => document.getElementById(id);
+const THEME_KEY = "recodr-theme";
+const lightQuery = window.matchMedia("(prefers-color-scheme: light)");
+// The chosen theme is cached locally so the first paint already uses it.
+function applyTheme(theme) {
+  const resolved =
+    theme === "system" || !theme ? (lightQuery.matches ? "light" : "dark") : theme;
+  document.documentElement.dataset.theme = resolved;
+  try {
+    localStorage.setItem(THEME_KEY, theme || "system");
+  } catch (_) {}
+}
+try {
+  applyTheme(localStorage.getItem(THEME_KEY) || "system");
+} catch (_) {
+  applyTheme("system");
+}
 const ui = {
   drop: $("dropZone"),
   settings: $("settingsView"),
@@ -52,9 +68,12 @@ let subtitleDefaultTouched = false;
 let autoEncoder = true;
 let lastControlValues = {};
 let debugLines = [],
+  debugRenderPending = false,
   persistTimer = null,
   queuePaused = true,
-  pendingFiles = [];
+  pendingFiles = [],
+  sampleJobId = null,
+  encodersReady = Promise.resolve();
 const MAX_LOG_LINES = 500;
 const labels = {
   nvenc: "NVIDIA NVENC",
@@ -95,6 +114,16 @@ function formatDuration(value) {
   const s = Math.max(0, Math.floor(Number(value) || 0));
   return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
+// ipcRenderer.invoke prefixes errors with "Error invoking remote method '…': Error: ".
+function errorMessage(error) {
+  return String(error?.message || error || "Unknown error").replace(
+    /^Error invoking remote method '[^']+': (?:\w*Error: )?/,
+    "",
+  );
+}
+function isCancellation(error) {
+  return errorMessage(error).startsWith("Encoding cancelled");
+}
 function notify(message, type = "info") {
   const row = document.createElement("div");
   row.className = `notice notice-${type}`;
@@ -110,27 +139,52 @@ function setView(name) {
     completion: ui.completion,
   }))
     el.classList.toggle("hidden", key !== name);
+  syncEditingState();
   renderQueue();
 }
+function syncEditingState() {
+  const editing = !!editingJobId && !!currentFile;
+  $("editingBanner").classList.toggle("hidden", !editing);
+  $("addToQueueBtn").textContent = editing ? "Update queued job" : "Add to Queue";
+  $("backBtn").textContent = editing ? "Cancel edit" : "Back";
+}
+function leaveCurrentFile() {
+  editingJobId = null;
+  pendingFiles = [];
+  resetEdit();
+  updateBatchBanner(0);
+  setView(queueProcessing ? "progress" : "drop");
+}
 function supportedInput(path) {
-  return /\.(mkv|avi|mov|mp4|webm|flv|wmv|m4v|ts|mts|m2ts|mpg|mpeg|ogv)$/i.test(
-    path,
-  );
+  const ext = String(path || "")
+    .split(".")
+    .pop()
+    .toLowerCase();
+  return (core?.INPUT_EXTENSIONS || []).includes(ext);
 }
 
-async function chooseFiles() {
+async function chooseFiles(replace = false) {
   try {
     const paths = await bridge.invoke("select-input-files");
-    if (paths?.length) await acceptFiles(paths);
+    if (paths?.length) await acceptFiles(paths, replace);
   } catch (e) {
-    notify(e.message, "error");
+    notify(errorMessage(e), "error");
   }
 }
-async function acceptFiles(paths) {
+async function acceptFiles(paths, replace = false) {
   const valid = (paths || []).filter(
     (p) => typeof p === "string" && supportedInput(p),
   );
   if (!valid.length) return notify("Choose a supported video file.", "error");
+  if (!replace && currentFile && getVisibleView() === "settings") {
+    pendingFiles.push(...valid);
+    updateBatchBanner();
+    notify(
+      `${valid.length} file(s) added to this batch. They open after you add the current file.`,
+      "info",
+    );
+    return;
+  }
   pendingFiles = valid.slice(1);
   updateBatchBanner(valid.length);
   await openFile(valid[0]);
@@ -162,7 +216,7 @@ async function openFile(file) {
   );
   for (const notice of [...ui.notices.children]) {
     if (
-      /^(Embedded subtitle fonts are preserved|Stereo conversion uses )/.test(
+      /^(Embedded subtitle fonts are preserved|Stereo conversion uses |No audio track matches )/.test(
         notice.textContent || "",
       )
     )
@@ -171,7 +225,10 @@ async function openFile(file) {
   currentFile = file;
   updateBatchBanner();
   try {
-    metadata = await bridge.invoke("get-video-info", file);
+    [metadata] = await Promise.all([
+      bridge.invoke("get-video-info", file),
+      encodersReady,
+    ]);
     displayFileInfo();
     displayTracks();
     loadControlsFromMetadata();
@@ -179,11 +236,8 @@ async function openFile(file) {
     setView("settings");
   } catch (e) {
     currentFile = null;
-    notify(`Could not read ${basename(file)}: ${e.message}`, "error");
+    notify(`Could not read ${basename(file)}: ${errorMessage(e)}`, "error");
   }
-}
-function processFile(filePath) {
-  return openFile(filePath);
 }
 function displayFileInfo() {
   const video = metadata?.streams?.find(
@@ -232,13 +286,19 @@ function displayTracks() {
     activeSettings?.audio?.includeLanguages || prefs.audioLangs || [];
   const subtitleLanguages =
     activeSettings?.subtitles?.includeLanguages || prefs.subLangs || [];
+  const audioIncluded = settingsCore.includedByLanguage(
+    audio.map((stream) => ({ language: stream.tags?.language })),
+    audioLanguages,
+    "audio",
+  );
+  const subtitleIncluded = settingsCore.includedByLanguage(
+    subs.map((stream) => ({ language: stream.tags?.language })),
+    subtitleLanguages,
+    "subtitle",
+  );
   audioTracks = audio.map((stream, i) => ({
     index: stream.index,
-    enabled:
-      !audioLanguages.length ||
-      audioLanguages.includes(
-        String(stream.tags?.language || "und").toLowerCase(),
-      ),
+    enabled: audioIncluded.included[i],
     action: activeSettings?.audio?.action || prefs.defaultAudioAction || "copy",
     bitrate: activeSettings?.audio?.bitrate || 192,
     channels: stream.channels || 2,
@@ -269,7 +329,7 @@ function displayTracks() {
       track.bitrate = activeSettings.audio.stereoBitrate;
     }
   });
-  subtitleTracks = subs.map((stream) => {
+  subtitleTracks = subs.map((stream, i) => {
     const image = [
       "hdmv_pgs_subtitle",
       "dvd_subtitle",
@@ -279,11 +339,7 @@ function displayTracks() {
     ].includes(String(stream.codec_name || "").toLowerCase());
     return {
       index: stream.index,
-      enabled:
-        !subtitleLanguages.length ||
-        subtitleLanguages.includes(
-          String(stream.tags?.language || "und").toLowerCase(),
-        ),
+      enabled: subtitleIncluded.included[i],
       action: image ? "copy" : activeSettings?.subtitles?.action || "copy",
       isImage: image,
       language: String(stream.tags?.language || "und").toLowerCase(),
@@ -323,11 +379,18 @@ function displayTracks() {
       "Image subtitles (PGS/VobSub) can only be copied; text conversion is unavailable.",
       "warning",
     );
+  if (audioIncluded.fallback) notifyAudioFallback(audioLanguages);
   if (attachmentTracks.some((t) => t.enabled && t.isFont))
     notify(
       "Embedded subtitle fonts are preserved. FFmpeg may prepare these fonts before encoding.",
       "info",
     );
+}
+function notifyAudioFallback(languages) {
+  notify(
+    `No audio track matches your included languages (${languages.join(", ")}), so all audio tracks are included.`,
+    "warning",
+  );
 }
 function selectMarkup(kind, i, value, options, disabled = false) {
   return (
@@ -668,30 +731,7 @@ function updateQualityOptions() {
     )
     .join("");
   quality.value = q.includes(oldQ) ? oldQ : q[0];
-  let p =
-    family === "nvenc"
-      ? ["p4", "p1", "p2", "p3", "p5", "p6", "p7"]
-      : family === "amf"
-        ? ["balanced", "speed", "quality"]
-        : family === "qsv"
-          ? ["medium", "veryfast", "fast", "slow", "veryslow"]
-          : family === "videotoolbox"
-            ? ["none"]
-            : core?.getCodecBase(codec) === "vp9"
-              ? ["4", "3", "5", "6"]
-              : core?.getCodecBase(codec) === "av1"
-                ? ["6", "4", "8"]
-                : [
-                    "medium",
-                    "ultrafast",
-                    "superfast",
-                    "veryfast",
-                    "faster",
-                    "fast",
-                    "slow",
-                    "slower",
-                    "veryslow",
-                  ];
+  const p = core.presetsFor(family, codec);
   preset.innerHTML = p
     .map((v) => `<option value="${v}">${v}</option>`)
     .join("");
@@ -721,31 +761,7 @@ function ensureSavedQualityOption(value, label = "Saved quality ") {
   return select.value === quality;
 }
 function setPresetOptions(family, codec, selected = "auto") {
-  const values =
-    family === "nvenc"
-      ? ["p4", "p1", "p2", "p3", "p5", "p6", "p7"]
-      : family === "amf"
-        ? ["balanced", "speed", "quality"]
-        : family === "qsv"
-          ? ["medium", "veryfast", "fast", "slow", "veryslow"]
-          : family === "videotoolbox"
-            ? ["none"]
-            : core?.getCodecBase(codec) === "vp9"
-              ? ["4", "3", "5", "6"]
-              : core?.getCodecBase(codec) === "av1"
-                ? ["6", "4", "8"]
-                : [
-                    "medium",
-                    "ultrafast",
-                    "superfast",
-                    "veryfast",
-                    "faster",
-                    "fast",
-                    "slow",
-                    "slower",
-                    "veryslow",
-                  ];
-  const choices = ["auto", ...values];
+  const choices = ["auto", ...core.presetsFor(family, codec)];
   if (selected && !choices.includes(selected)) choices.push(selected);
   $("defaultVideoPreset").innerHTML = choices
     .map(
@@ -935,16 +951,28 @@ function createId() {
 function compatibility(job) {
   return core?.getCompatibilityIssues(job.snapshot) || [];
 }
+// Only fields a queued job needs are stored; full ffprobe output would blow the 1 MiB queue limit.
+function persistableJob(j) {
+  const stripTracks = (tracks) =>
+    (tracks || []).map(({ metadata: _metadata, ...track }) => track);
+  return {
+    ...j,
+    inputPath: j.file,
+    status: j.status === "running" ? "pending" : j.status,
+    progress: 0,
+    currentSpeed: undefined,
+    eta: undefined,
+    metadata: { format: { duration: j.metadata?.format?.duration } },
+    snapshot: j.snapshot && {
+      ...j.snapshot,
+      audioTracks: stripTracks(j.snapshot.audioTracks),
+      subtitleTracks: stripTracks(j.snapshot.subtitleTracks),
+    },
+  };
+}
 async function persistQueue() {
   try {
-    await bridge.invoke(
-      "save-queue",
-      queue.map((j) => ({
-        ...j,
-        inputPath: j.file,
-        status: j.status === "running" ? "pending" : j.status,
-      })),
-    );
+    await bridge.invoke("save-queue", queue.map(persistableJob));
   } catch (e) {
     notify(`Queue could not be saved: ${e.message}`, "error");
   }
@@ -996,21 +1024,51 @@ async function startQueue() {
   queueProcessing = true;
   stopAfterCurrent = false;
   renderQueue();
+  const ranJobs = [];
   try {
     while (!stopAfterCurrent) {
       const job = queue.find(
         (j) => j.status === "pending" && j.id !== editingJobId,
       );
       if (!job) break;
+      ranJobs.push(job);
       await runJob(job);
     }
   } finally {
     queueProcessing = false;
+    stopAfterCurrent = false;
     currentJobId = null;
+    bridge.invoke("set-progress", -1).catch(() => {});
     await persistNow();
     renderQueue();
-    if (getVisibleView() === "progress") setView("drop");
+    finishQueueRun(ranJobs);
   }
+}
+function finishQueueRun(ranJobs) {
+  const done = ranJobs.filter((j) => j.status === "done");
+  const failed = ranJobs.filter((j) => j.status === "error");
+  if (!done.length && !failed.length) {
+    if (getVisibleView() === "progress") setView("drop");
+    return;
+  }
+  bridge
+    .invoke("notify-queue-finished", {
+      done: done.length,
+      failed: failed.length,
+    })
+    .catch(() => {});
+  if (getVisibleView() !== "progress") {
+    notify(
+      `Queue finished: ${done.length} done${failed.length ? `, ${failed.length} failed` : ""}.`,
+      failed.length ? "warning" : "success",
+    );
+    return;
+  }
+  if (!done.length) {
+    setView("drop");
+    return;
+  }
+  showCompletion(done, failed.length);
 }
 async function runJob(job) {
   const issues = compatibility(job);
@@ -1028,7 +1086,7 @@ async function runJob(job) {
     job.status = "error";
     job.missing = true;
     job.error = "Source file is missing. Edit or remove this job.";
-    notify(job.error, "error");
+    notify(`${basename(job.file)}: ${job.error}`, "error");
     schedulePersist();
     return;
   }
@@ -1063,12 +1121,22 @@ async function runJob(job) {
     job.notice = result.notice || "";
     job.error = null;
     if (job.notice) notify(job.notice, "warning");
-    if (!queueProcessing || getVisibleView() === "progress")
-      showCompletion(job);
   } catch (e) {
-    job.status = "error";
-    job.error = e.message || String(e);
-    notify(`${basename(job.file)} failed: ${job.error}`, "error");
+    if (isCancellation(e)) {
+      // A cancelled job returns to the queue; pausing keeps it from being picked up again.
+      job.status = "pending";
+      job.error = null;
+      stopAfterCurrent = true;
+      queuePaused = true;
+      notify(
+        `${basename(job.file)} was cancelled and is back in the queue.`,
+        "info",
+      );
+    } else {
+      job.status = "error";
+      job.error = errorMessage(e);
+      notify(`${basename(job.file)} failed: ${job.error}`, "error");
+    }
   }
   currentJobId = null;
   renderQueue();
@@ -1088,15 +1156,36 @@ function showProgress(job) {
   debugLines = [];
   renderDebug();
 }
-function showCompletion(job) {
-  lastCompletedOutputFolder = dirname(job.outputPath);
-  $("outputPath").textContent = job.outputPath;
+function showCompletion(doneJobs, failedCount = 0) {
+  const last = doneJobs[doneJobs.length - 1];
+  const summary = doneJobs.length > 1 || failedCount > 0;
+  const sum = (key) =>
+    doneJobs.reduce(
+      (total, j) => (Number.isFinite(j[key]) ? total + j[key] : NaN),
+      0,
+    );
+  const input = sum("inputSizeMb"),
+    output = sum("outputSizeMb");
+  const sizes =
+    Number.isFinite(input) && Number.isFinite(output)
+      ? `${input.toFixed(1)} MB → ${output.toFixed(1)} MB${input > 0 ? ` (${Math.round((output / input) * 100)}%)` : ""}`
+      : "";
+  $("completionTitle").textContent = summary
+    ? "Queue Complete"
+    : "Encoding Complete";
+  $("outputPath").textContent =
+    doneJobs.length > 1 ? `Last output: ${last.outputPath}` : last.outputPath;
   $("sizeComparison").textContent =
-    Number.isFinite(job.inputSizeMb) && Number.isFinite(job.outputSizeMb)
-      ? `${job.inputSizeMb.toFixed(1)} MB → ${job.outputSizeMb.toFixed(1)} MB`
-      : "Encoding complete";
+    [
+      summary
+        ? `${doneJobs.length} done${failedCount ? ` · ${failedCount} failed` : ""}`
+        : "",
+      sizes,
+    ]
+      .filter(Boolean)
+      .join(" · ") || "Encoding complete";
   lastCompletedOutputFolder =
-    job.snapshot?.outputDirectory || dirname(job.outputPath);
+    last.snapshot?.outputDirectory || dirname(last.outputPath);
   setView("completion");
 }
 function getVisibleView() {
@@ -1141,7 +1230,7 @@ function renderQueue() {
         st === "running"
           ? `<div class="queue-item-progress-wrap"><div class="queue-item-bar-track"><div class="queue-item-bar-fill" style="width:${Math.max(0, Math.min(100, Number(j.progress) || 0))}%"></div></div><div class="queue-item-run-stats">${Number(j.progress || 0).toFixed(1)}% · ${escapeHtml(j.currentSpeed || "Starting…")} · ETA ${escapeHtml(j.eta || "--")}</div></div>`
           : "";
-      return `<div class="queue-item status-${st}"><div class="queue-item-status">${st === "running" ? "◌" : st === "done" ? "✓" : err ? "!" : "·"}</div><div class="queue-item-info"><span class="queue-item-name" title="${title}">${title}</span><span class="queue-item-meta ${err ? "error-text" : ""}">${meta}</span>${progress}${st === "done" ? `<button class="queue-btn" data-action="open-output" data-id="${escapeHtml(j.id)}">Open output</button>` : ""}</div><div class="queue-item-actions">${st === "pending" ? `${move}${moveDown}<button class="queue-btn" data-action="edit" data-id="${escapeHtml(j.id)}">Edit</button><button class="queue-btn danger" data-action="remove" data-id="${escapeHtml(j.id)}">Remove</button>` : err ? `<button class="queue-btn" data-action="edit" data-id="${escapeHtml(j.id)}">Edit</button><button class="queue-btn" data-action="retry" data-id="${escapeHtml(j.id)}">Retry</button><button class="queue-btn danger" data-action="remove" data-id="${escapeHtml(j.id)}">Remove</button>` : ""}</div></div>`;
+      return `<div class="queue-item status-${st}" data-id="${escapeHtml(j.id)}"><div class="queue-item-status">${st === "running" ? "◌" : st === "done" ? "✓" : err ? "!" : "·"}</div><div class="queue-item-info"><span class="queue-item-name" title="${title}">${title}</span><span class="queue-item-meta ${err ? "error-text" : ""}">${meta}</span>${progress}${st === "done" ? `<button class="queue-btn" data-action="open-output" data-id="${escapeHtml(j.id)}">Open output</button>` : ""}</div><div class="queue-item-actions">${st === "pending" ? `${move}${moveDown}<button class="queue-btn" data-action="edit" data-id="${escapeHtml(j.id)}">Edit</button><button class="queue-btn danger" data-action="remove" data-id="${escapeHtml(j.id)}">Remove</button>` : err ? `<button class="queue-btn" data-action="edit" data-id="${escapeHtml(j.id)}">Edit</button><button class="queue-btn" data-action="retry" data-id="${escapeHtml(j.id)}">Retry</button><button class="queue-btn danger" data-action="remove" data-id="${escapeHtml(j.id)}">Remove</button>` : ""}</div></div>`;
     })
     .join("");
   $("queueActions").classList.toggle("hidden", !queue.length);
@@ -1149,6 +1238,10 @@ function renderQueue() {
   $("clearFinishedBtn").classList.toggle("hidden", !finished);
   $("cancelCurrentBtn").classList.toggle("hidden", !queueProcessing);
   $("stopAfterCurrentBtn").classList.toggle("hidden", !queueProcessing);
+  $("stopAfterCurrentBtn").disabled = stopAfterCurrent;
+  $("stopAfterCurrentBtn").textContent = stopAfterCurrent
+    ? "Stopping after current…"
+    : "Stop after current";
   const issues = currentFile
     ? core?.getCompatibilityIssues(optionsFromUi()) || []
     : [];
@@ -1192,7 +1285,8 @@ async function queueAction(action, id) {
   if (action === "edit" && job) {
     editingJobId = job.id;
     await openFile(job.file);
-    if (metadata) {
+    if (!metadata) editingJobId = null;
+    else {
       audioTracks = structuredClone(job.snapshot.audioTracks || []).map(
         (track) => ({
           ...track,
@@ -1269,16 +1363,35 @@ async function queueAction(action, id) {
   if (action === "open-output" && job)
     bridge.invoke("open-path", job.outputPath);
 }
+// Progress ticks update the running row in place instead of rebuilding the whole list.
+function updateRunningQueueItem(job) {
+  const item = ui.queueList.querySelector(
+    `.queue-item[data-id="${CSS.escape(job.id)}"]`,
+  );
+  if (!item) return renderQueue();
+  const fill = item.querySelector(".queue-item-bar-fill");
+  const stats = item.querySelector(".queue-item-run-stats");
+  if (fill)
+    fill.style.width = `${Math.max(0, Math.min(100, Number(job.progress) || 0))}%`;
+  if (stats)
+    stats.textContent = `${Number(job.progress || 0).toFixed(1)}% · ${job.currentSpeed || "Starting…"} · ETA ${job.eta || "--"}`;
+}
 function renderDebug() {
   const el = $("debugLog");
   el.textContent = debugLines.join("\n");
   el.scrollTop = el.scrollHeight;
 }
-function logLine(line) {
-  debugLines.push(String(line));
+function logLine(text) {
+  for (const line of String(text).split(/\r\n|\r|\n/))
+    if (line.trim()) debugLines.push(line);
   if (debugLines.length > MAX_LOG_LINES)
     debugLines.splice(0, debugLines.length - MAX_LOG_LINES);
-  renderDebug();
+  if (debugRenderPending) return;
+  debugRenderPending = true;
+  requestAnimationFrame(() => {
+    debugRenderPending = false;
+    renderDebug();
+  });
 }
 
 function settingValue(id) {
@@ -1324,6 +1437,7 @@ function fillSettingsForm(value) {
   $("clearSubtitleNames").checked = s.naming.clearNames.includes("subtitle");
   syncClearNameInputs();
   $("debugModeToggle").checked = s.tools.debugMode;
+  $("themeSelect").value = s.appearance.theme;
   updateTemplatePreview();
   return s;
 }
@@ -1367,6 +1481,7 @@ function collectSettingsForm() {
       ].filter(Boolean),
     },
     tools: { debugMode: $("debugModeToggle").checked },
+    appearance: { theme: $("themeSelect").value },
   });
 }
 function setSettingsError(message) {
@@ -1395,31 +1510,10 @@ function validateSettingsForm() {
       ? availableEncoders.recommended || "software"
       : $("defaultEncoderFamily").value;
   const preset = $("defaultVideoPreset").value;
-  const values =
-    family === "nvenc"
-      ? ["auto", "p4", "p1", "p2", "p3", "p5", "p6", "p7"]
-      : family === "amf"
-        ? ["auto", "balanced", "speed", "quality"]
-        : family === "qsv"
-          ? ["auto", "medium", "veryfast", "fast", "slow", "veryslow"]
-          : family === "videotoolbox"
-            ? ["auto", "none"]
-            : $("defaultVideoCodec").value === "vp9"
-              ? ["auto", "4", "3", "5", "6"]
-              : $("defaultVideoCodec").value === "av1"
-                ? ["auto", "6", "4", "8"]
-                : [
-                    "auto",
-                    "medium",
-                    "ultrafast",
-                    "superfast",
-                    "veryfast",
-                    "faster",
-                    "fast",
-                    "slow",
-                    "slower",
-                    "veryslow",
-                  ];
+  const values = [
+    "auto",
+    ...core.presetsFor(family, $("defaultVideoCodec").value),
+  ];
   if (!values.includes(preset))
     throw new Error(
       "Choose a preset supported by the selected encoder and codec.",
@@ -1507,6 +1601,7 @@ async function loadSettings() {
     const binary = await bridge.invoke("get-binary-config");
     $("ffmpegPathInput").value = binary?.ffmpegPath || "";
     $("ffprobePathInput").value = binary?.ffprobePath || "";
+    renderBinaryCheck(binary?.check);
   } catch (_) {}
   let legacy = {};
   try {
@@ -1528,6 +1623,7 @@ async function loadSettings() {
   };
   settingsDraft = structuredClone(savedSettings);
   fillSettingsForm(settingsDraft);
+  applyTheme(savedSettings.appearance.theme);
 }
 async function openSettings() {
   settingsDraft = structuredClone(
@@ -1538,13 +1634,19 @@ async function openSettings() {
   switchSettingsTab("video");
   $("settingsOverlay").classList.remove("hidden");
   settingsOpen = true;
+  document.querySelector("[data-settings-tab].active")?.focus();
+}
+function closeSettingsOverlay() {
+  $("settingsOverlay").classList.add("hidden");
+  settingsOpen = false;
+  $("openSettingsBtn").focus();
 }
 function cancelSettings() {
   settingsDraft = structuredClone(savedSettings);
   fillSettingsForm(settingsDraft);
+  applyTheme(savedSettings.appearance.theme);
   setSettingsError("");
-  $("settingsOverlay").classList.add("hidden");
-  settingsOpen = false;
+  closeSettingsOverlay();
 }
 async function saveSettings() {
   setSettingsError("");
@@ -1552,10 +1654,16 @@ async function saveSettings() {
     validateSettingsForm();
     const next = collectSettingsForm();
     await bridge.invoke("save-settings", next);
-    await bridge.invoke("save-binary-config", {
+    const binary = await bridge.invoke("save-binary-config", {
       ffmpegPath: $("ffmpegPathInput").value.trim(),
       ffprobePath: $("ffprobePathInput").value.trim(),
     });
+    renderBinaryCheck(binary?.check);
+    if (binary?.check && !binary.check.allOk)
+      notify(
+        "Settings saved, but FFmpeg or FFprobe could not be run. Check Settings → Tools.",
+        "warning",
+      );
     // Keep legacy readers compatible while old queue records are still present.
     prefs = {
       ...prefs,
@@ -1567,16 +1675,17 @@ async function saveSettings() {
     };
     savedSettings = next;
     settingsDraft = structuredClone(next);
-    $("settingsOverlay").classList.add("hidden");
-    settingsOpen = false;
+    applyTheme(next.appearance.theme);
+    closeSettingsOverlay();
     notify("Settings saved for future files.", "success");
   } catch (error) {
-    setSettingsError(error.message || "Settings could not be saved.");
+    setSettingsError(errorMessage(error) || "Settings could not be saved.");
   }
 }
 function resetSettingsDraft() {
   fillSettingsForm(settingsCore.DEFAULT_SETTINGS);
   settingsDraft = structuredClone(settingsCore.DEFAULT_SETTINGS);
+  applyTheme(settingsDraft.appearance.theme);
   setSettingsError("");
 }
 function applySavedDefaultsToCurrentFile() {
@@ -1612,10 +1721,20 @@ function applySavedDefaultsToCurrentFile() {
   outputDirectory = savedSettings.video.outputDirectory;
   $("outputDirectoryLabel").textContent =
     outputDirectory || "Same folder as source";
-  audioTracks.forEach((track) => {
-    track.enabled =
-      !savedSettings.audio.includeLanguages.length ||
-      savedSettings.audio.includeLanguages.includes(track.language);
+  const audioIncluded = settingsCore.includedByLanguage(
+    audioTracks,
+    savedSettings.audio.includeLanguages,
+    "audio",
+  );
+  const subtitleIncluded = settingsCore.includedByLanguage(
+    subtitleTracks,
+    savedSettings.subtitles.includeLanguages,
+    "subtitle",
+  );
+  if (audioIncluded.fallback)
+    notifyAudioFallback(savedSettings.audio.includeLanguages);
+  audioTracks.forEach((track, i) => {
+    track.enabled = audioIncluded.included[i];
     track.action = savedSettings.audio.action;
     track.bitrate = savedSettings.audio.bitrate;
     track.channelsMode = savedSettings.audio.channelsMode;
@@ -1625,10 +1744,8 @@ function applySavedDefaultsToCurrentFile() {
     }
     track.titleConfig = titleConfigFor("audio", savedSettings);
   });
-  subtitleTracks.forEach((track) => {
-    track.enabled =
-      !savedSettings.subtitles.includeLanguages.length ||
-      savedSettings.subtitles.includeLanguages.includes(track.language);
+  subtitleTracks.forEach((track, i) => {
+    track.enabled = subtitleIncluded.included[i];
     track.action = savedSettings.subtitles.action;
     if (track.isImage && track.action !== "copy") track.action = "copy";
     track.titleConfig = titleConfigFor("subtitle", savedSettings);
@@ -1650,20 +1767,64 @@ function applySavedDefaultsToCurrentFile() {
   displayTitleControls();
   commandModified = false;
   updateCommand();
-  $("settingsOverlay").classList.add("hidden");
-  settingsOpen = false;
+  closeSettingsOverlay();
   if (currentEncoderFamily) rememberControls();
   notify("Saved defaults applied to this file.", "success");
 }
+function renderBinaryCheck(result) {
+  const box = $("binaryCheckResult");
+  box.replaceChildren();
+  if (!result) return;
+  const sources = {
+    config: "saved path",
+    env: "environment variable",
+    path: "system PATH",
+  };
+  for (const tool of ["ffmpeg", "ffprobe"]) {
+    const check = result[tool] || {};
+    const row = document.createElement("p");
+    row.className = `binary-check-row ${check.ok ? "ok" : "failed"}`;
+    const version = /version\s+(\S+)/.exec(check.version || "")?.[1];
+    row.textContent = check.ok
+      ? `✓ ${tool}${version ? ` ${version}` : ""} · ${sources[result.source?.[tool]] || "system PATH"} (${check.command})`
+      : `✗ ${tool} could not run from ${check.command || tool}${check.error ? `: ${check.error}` : ""}`;
+    box.append(row);
+  }
+  const env = result.env || {};
+  const vars = [
+    env.ffmpegLoaded && `FFMPEG_PATH=${env.ffmpegVar}`,
+    env.ffprobeLoaded && `FFPROBE_PATH=${env.ffprobeVar}`,
+  ].filter(Boolean);
+  const status = $("envOverrideStatus");
+  status.classList.toggle("hidden", !vars.length);
+  status.textContent = vars.length
+    ? `Environment: ${vars.join(", ")}. Used when no path is saved below.`
+    : "";
+}
 async function checkBinaryConfig() {
-  const result = await bridge.invoke("verify-binary-config", {
-    ffmpegPath: $("ffmpegPathInput").value.trim(),
-    ffprobePath: $("ffprobePathInput").value.trim(),
-  });
-  $("binaryCheckResult").textContent = JSON.stringify(result);
+  const button = $("checkBinaryConfigBtn");
+  button.disabled = true;
+  button.textContent = "Checking…";
+  try {
+    renderBinaryCheck(
+      await bridge.invoke("verify-binary-config", {
+        ffmpegPath: $("ffmpegPathInput").value.trim(),
+        ffprobePath: $("ffprobePathInput").value.trim(),
+      }),
+    );
+  } catch (e) {
+    notify(errorMessage(e), "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Check paths";
+  }
 }
 
 document.addEventListener("click", async (e) => {
+  if (e.target === $("settingsOverlay")) {
+    cancelSettings();
+    return;
+  }
   const link = e.target.closest("a[href]");
   if (link) {
     const url = new URL(link.href, location.href);
@@ -1744,8 +1905,9 @@ document.addEventListener("click", async (e) => {
   if (id === "browseFilesBtn") chooseFiles();
   else if (e.target.closest("#dropZone")) chooseFiles();
   else if (id === "changeFileBtn") {
-    if (currentFile) await chooseFiles();
-  } else if (id === "addToQueueBtn") enqueueCurrent();
+    if (currentFile) await chooseFiles(true);
+  } else if (id === "backBtn") leaveCurrentFile();
+  else if (id === "addToQueueBtn") enqueueCurrent();
   else if (id === "startQueueBtn") {
     queuePaused = false;
     startQueue();
@@ -1758,10 +1920,11 @@ document.addEventListener("click", async (e) => {
   } else if (id === "cancelCurrentBtn" && currentJobId)
     bridge
       .invoke("cancel-encode", currentJobId)
-      .catch((e) => notify(e.message, "error"));
+      .catch((e) => notify(errorMessage(e), "error"));
   else if (id === "stopAfterCurrentBtn") {
     stopAfterCurrent = true;
     queuePaused = true;
+    renderQueue();
   } else if (id === "openSettingsBtn") openSettings();
   else if (id === "closeSettingsBtn" || id === "cancelSettingsBtn")
     cancelSettings();
@@ -1917,6 +2080,7 @@ document.addEventListener("change", (e) => {
         : $("defaultEncoderFamily").value;
     setPresetOptions(family, $("defaultVideoCodec").value, "auto");
   }
+  if (t.id === "themeSelect") applyTheme(t.value);
   if (t.id.startsWith("template")) updateTemplatePreview();
   if (t.id.startsWith("clear") && t.type === "checkbox") {
     syncClearNameInputs();
@@ -1947,20 +2111,29 @@ document.addEventListener("input", (e) => {
   }
   if (t.id.startsWith("template")) updateTemplatePreview();
 });
-ui.drop.addEventListener("dragover", (e) => {
+// Files can be dropped anywhere in the window; the drop zone only adds the highlight.
+document.addEventListener("dragover", (e) => {
+  if (!e.dataTransfer?.types?.includes("Files")) return;
   e.preventDefault();
-  ui.drop.classList.add("drag-over");
+  ui.drop.classList.toggle("drag-over", ui.drop.contains(e.target));
 });
-ui.drop.addEventListener("dragleave", () =>
-  ui.drop.classList.remove("drag-over"),
-);
-ui.drop.addEventListener("drop", (e) => {
+document.addEventListener("dragleave", (e) => {
+  if (!e.relatedTarget) ui.drop.classList.remove("drag-over");
+});
+document.addEventListener("drop", (e) => {
   e.preventDefault();
   ui.drop.classList.remove("drag-over");
-  const paths = Array.from(e.dataTransfer.files || [])
+  if (settingsOpen) return;
+  const paths = Array.from(e.dataTransfer?.files || [])
     .map((f) => bridge.filePath(f))
     .filter(Boolean);
   if (paths.length) acceptFiles(paths);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && settingsOpen) {
+    e.preventDefault();
+    cancelSettings();
+  }
 });
 ui.drop.addEventListener("keydown", (e) => {
   if (e.key === "Enter" || e.key === " ") {
@@ -1991,13 +2164,15 @@ async function runSample() {
       "_sample",
     ) || "";
   sampleRunning = true;
+  sampleJobId = createId();
   $("sampleBtn").disabled = true;
+  $("sampleBtn").textContent = "Encoding sample…";
   try {
     const result = await bridge.invoke("encode-sample", currentFile, out, {
       ...opts,
       sampleStart: start,
       sampleDuration: 30,
-      jobId: createId(),
+      jobId: sampleJobId,
     });
     const sample = $("sampleResult");
     sample.textContent = `Sample: ${result.outputPath} · estimated ${Number(result.estimatedSizeMb || result.outputSizeMb || 0).toFixed(1)} MB `;
@@ -2009,10 +2184,12 @@ async function runSample() {
     sample.dataset.path = result.outputPath;
     sample.classList.remove("hidden");
   } catch (e) {
-    notify(`Sample encode failed: ${e.message}`, "error");
+    notify(`Sample encode failed: ${errorMessage(e)}`, "error");
   } finally {
     sampleRunning = false;
-    $("sampleBtn").disabled = false;
+    sampleJobId = null;
+    $("sampleBtn").textContent = "Encode 30-second sample";
+    renderQueue();
   }
 }
 
@@ -2042,14 +2219,20 @@ function formatProgressNumber(value, speed = false) {
     : "--";
 }
 bridge.on("encode-stderr", (payload) => {
-  if (payload?.jobId && payload.jobId !== currentJobId) return;
-  logLine(payload?.message || payload);
+  if (!payload?.jobId || payload.jobId !== currentJobId) return;
+  logLine(payload.message);
 });
 bridge.on("encode-notice", (payload) => {
   if (payload?.jobId && payload.jobId !== currentJobId) return;
   notify(payload?.message || String(payload), "warning");
 });
 bridge.on("encode-progress", (payload) => {
+  if (payload?.jobId && payload.jobId === sampleJobId) {
+    const percent = Number(payload.percent);
+    if (Number.isFinite(percent) && percent >= 0)
+      $("sampleBtn").textContent = `Encoding sample… ${Math.round(percent)}%`;
+    return;
+  }
   if (!payload || (payload.jobId && payload.jobId !== currentJobId)) return;
   const job = queue.find((j) => j.id === currentJobId),
     total = Number(payload.totalFrames || job?.snapshot?.totalFrames || 0),
@@ -2061,6 +2244,9 @@ bridge.on("encode-progress", (payload) => {
       : NaN;
   if (Number.isFinite(p)) {
     if (job) job.progress = p;
+    bridge
+      .invoke("set-progress", Math.max(0, Math.min(100, p)) / 100)
+      .catch(() => {});
     const bar = $("progressFill");
     bar.parentElement.classList.remove("indeterminate");
     bar.style.width = `${Math.max(0, Math.min(100, p))}%`;
@@ -2082,10 +2268,34 @@ bridge.on("encode-progress", (payload) => {
   if (job) {
     job.currentSpeed = vals.speed;
     job.eta = vals.eta;
-    renderQueue();
+    updateRunningQueueItem(job);
   }
 });
+lightQuery.addEventListener("change", () => {
+  const theme = settingsOpen
+    ? $("themeSelect").value
+    : savedSettings?.appearance?.theme;
+  if (theme === "system") applyTheme("system");
+});
+async function detectEncoders() {
+  const subtitle = $("dropSubtitle");
+  subtitle.textContent = "or click to browse · detecting encoders…";
+  try {
+    availableEncoders = await bridge.invoke("detect-encoders");
+    if (!availableEncoders?.available?.length)
+      notify(
+        "FFmpeg was not found or reported no usable encoders. Set its path in Settings → Tools.",
+        "error",
+      );
+  } catch (e) {
+    notify(`Encoder detection failed: ${errorMessage(e)}`, "error");
+  } finally {
+    subtitle.textContent = "or click to browse";
+  }
+  initEncoderSelect();
+}
 async function initialize() {
+  encodersReady = detectEncoders();
   try {
     await loadSettings();
     const restored = await bridge.invoke("load-queue");
@@ -2101,18 +2311,20 @@ async function initialize() {
           : j.error,
     }));
     queuePaused = queue.length > 0;
-    for (const j of queue) {
-      try {
-        j.missing = !(await bridge.invoke("file-status", j.file)).exists;
-      } catch {
-        j.missing = true;
-      }
-      if (j.missing && j.status === "pending")
-        j.error =
-          "Source file is missing. Edit, retry after restoring it, or remove this job.";
-    }
-    availableEncoders = await bridge.invoke("detect-encoders");
-    initEncoderSelect();
+    await Promise.all(
+      queue.map(async (j) => {
+        try {
+          j.missing = !(await bridge.invoke("file-status", j.file)).exists;
+        } catch {
+          j.missing = true;
+        }
+        if (j.missing && j.status === "pending")
+          j.error =
+            "Source file is missing. Edit, retry after restoring it, or remove this job.";
+      }),
+    );
+    renderQueue();
+    await encodersReady;
     await persistNow();
   } catch (e) {
     notify(`Startup issue: ${e.message}`, "error");

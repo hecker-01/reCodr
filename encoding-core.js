@@ -13,6 +13,27 @@
     software: { hevc: "libx265", h264: "libx264" },
   };
   const FORMATS = new Set(["mkv", "mp4", "mov", "webm"]);
+  const INPUT_EXTENSIONS = [
+    "mkv", "avi", "mov", "mp4", "webm", "flv", "wmv", "m4v",
+    "ts", "mts", "m2ts", "mpg", "mpeg", "ogv",
+  ];
+  const X26X_PRESETS = [
+    "medium", "ultrafast", "superfast", "veryfast", "faster",
+    "fast", "slow", "slower", "veryslow",
+  ];
+
+  // Preset choices offered for an encoder family + codec; the first entry is the default.
+  function presetsFor(family, codec) {
+    if (family === "nvenc") return ["p4", "p1", "p2", "p3", "p5", "p6", "p7"];
+    if (family === "amf") return ["balanced", "speed", "quality"];
+    if (family === "qsv")
+      return ["medium", "veryfast", "fast", "slow", "veryslow"];
+    if (family === "videotoolbox") return ["none"];
+    const base = getCodecBase(codec);
+    if (base === "vp9") return ["4", "3", "5", "6"];
+    if (base === "av1") return ["6", "4", "8"];
+    return [...X26X_PRESETS];
+  }
 
   function getEncoderFamily(codec) {
     for (const [family, codecs] of Object.entries(FAMILY_CODECS)) {
@@ -673,7 +694,12 @@
           dispositionFlags(t, idx === subtitleDefault),
         );
     });
-    if (options.duration > 0) args.push("-t", String(options.duration));
+    // Only bounded encodes (samples) get -t. ffprobe's container duration can be wrong
+    // (e.g. MPEG-TS timestamp resets), and trimming to it silently truncates full encodes.
+    if (options.limitDuration > 0)
+      args.push("-t", String(options.limitDuration));
+    // Sparse subtitle/attachment streams can overflow FFmpeg's default muxing queue mid-encode.
+    args.push("-max_muxing_queue_size", "4096");
     args.push("-progress", "pipe:1", "-stats_period", "0.25", output);
     return args;
   }
@@ -686,5 +712,7 @@
     getEncoderFamily,
     getCodecBase,
     getOutputPath,
+    presetsFor,
+    INPUT_EXTENSIONS,
   };
 });
