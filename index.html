@@ -58,7 +58,7 @@
             <line x1="12" y1="3" x2="12" y2="15"></line>
           </svg>
           <p class="drop-title">Drop video file(s) here</p>
-          <p class="drop-subtitle">or click to browse</p>
+          <p id="dropSubtitle" class="drop-subtitle">or click to browse</p>
         </div>
       </div>
       <div id="noticeArea" class="notice-area" aria-live="polite"></div>
@@ -69,7 +69,10 @@
         <section class="panel">
           <div class="panel-header">
             <h2>Source File</h2>
-            <button id="changeFileBtn" class="btn-text">Change</button>
+            <div class="track-header-actions">
+              <button id="changeFileBtn" class="btn-text">Change</button>
+              <button id="backBtn" class="btn-text">Back</button>
+            </div>
           </div>
           <div id="fileInfo" class="info-grid"></div>
         </section>
@@ -128,36 +131,22 @@
             <div class="info-row">
               <span class="info-label">Encoder</span>
               <div class="encoder-row">
-                <select id="encoderSelect" class="info-value-select"></select>
+                <select id="encoderSelect" class="info-value-select">
+                  <option>Detecting encoders…</option>
+                </select>
               </div>
             </div>
             <div class="info-row">
               <span class="info-label">Codec</span>
-              <select id="videoCodec" class="info-value-select">
-                <option value="hevc_nvenc">HEVC (H.265) NVENC</option>
-                <option value="h264_nvenc">H.264 (AVC) NVENC</option>
-                <option value="vp9">VP9</option>
-                <option value="av1">AV1</option>
-              </select>
+              <select id="videoCodec" class="info-value-select"></select>
             </div>
             <div class="info-row">
               <span class="info-label">Quality</span>
-              <select id="videoQuality" class="info-value-select">
-                <option value="22">CQ 22 (Default)</option>
-                <option value="15">CQ 15 (High)</option>
-                <option value="28">CQ 28 (Medium)</option>
-                <option value="35">CQ 35 (Low)</option>
-              </select>
+              <select id="videoQuality" class="info-value-select"></select>
             </div>
             <div class="info-row">
               <span class="info-label">Preset</span>
-              <select id="videoPreset" class="info-value-select">
-                <option value="p4">P4 (Default: better compression)</option>
-                <option value="p1">
-                  P1 (Fast: higher speed, larger files)
-                </option>
-                <option value="p7">P7 (Slow: best compression)</option>
-              </select>
+              <select id="videoPreset" class="info-value-select"></select>
             </div>
             <div class="info-row">
               <span class="info-label">Format</span>
@@ -258,7 +247,8 @@
           <code
             id="commandPreview"
             class="command-preview"
-            contenteditable="true"
+            contenteditable="plaintext-only"
+            spellcheck="false"
           ></code>
         </section>
 
@@ -339,7 +329,7 @@
               <polyline points="20 6 9 17 4 12"></polyline>
             </svg>
           </div>
-          <h2>Encoding Complete</h2>
+          <h2 id="completionTitle">Encoding Complete</h2>
           <p id="outputPath" class="output-path"></p>
           <div id="sizeComparison" class="size-comparison"></div>
           <button id="encodeAnotherBtn" class="btn-secondary">
@@ -376,9 +366,14 @@
 
       <!-- Settings Modal Overlay -->
       <div id="settingsOverlay" class="settings-overlay hidden">
-        <div class="settings-modal">
+        <div
+          class="settings-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settingsTitle"
+        >
           <div class="settings-modal-header">
-            <h2>Settings</h2>
+            <h2 id="settingsTitle">Settings</h2>
             <button
               id="closeSettingsBtn"
               class="settings-close-btn"
@@ -397,10 +392,12 @@
               </svg>
             </button>
           </div>
-          <nav class="settings-tabs" aria-label="Settings sections">
+          <nav class="settings-tabs" role="tablist" aria-label="Settings sections">
             <button
               type="button"
               class="settings-tab active"
+              role="tab"
+              aria-selected="true"
               data-settings-tab="video"
             >
               Video &amp; Output
@@ -408,6 +405,8 @@
             <button
               type="button"
               class="settings-tab"
+              role="tab"
+              aria-selected="false"
               data-settings-tab="audio"
             >
               Audio
@@ -415,6 +414,8 @@
             <button
               type="button"
               class="settings-tab"
+              role="tab"
+              aria-selected="false"
               data-settings-tab="subtitles"
             >
               Subtitles
@@ -422,6 +423,8 @@
             <button
               type="button"
               class="settings-tab"
+              role="tab"
+              aria-selected="false"
               data-settings-tab="naming"
             >
               Naming
@@ -429,6 +432,8 @@
             <button
               type="button"
               class="settings-tab"
+              role="tab"
+              aria-selected="false"
               data-settings-tab="tools"
             >
               Tools
@@ -707,7 +712,7 @@
                 </p>
                 <div
                   id="envOverrideStatus"
-                  class="env-override-status hidden"
+                  class="env-override-status env hidden"
                 ></div>
                 <div class="settings-grid">
                   <label class="setting-field setting-field-wide"

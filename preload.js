@@ -19,6 +19,8 @@ const INVOKE_CHANNELS = new Set([
   "open-path",
   "open-external",
   "get-app-version",
+  "set-progress",
+  "notify-queue-finished",
   "encode-video",
   "encode-custom",
   "encode-sample",

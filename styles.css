@@ -1529,3 +1529,21 @@ body {
     flex-direction: column;
   }
 }
+
+.binary-check-row {
+  font-size: 0.813rem;
+  word-break: break-all;
+}
+
+.binary-check-row.ok {
+  color: var(--success);
+}
+
+.binary-check-row.failed {
+  color: #f38ba8;
+}
+
+.queue-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

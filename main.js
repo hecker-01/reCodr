@@ -6,6 +6,7 @@ const {
   powerSaveBlocker,
   dialog,
   shell,
+  Notification,
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -86,11 +87,16 @@ function loadPrefs() {
       ? settingsCore.normalizeSettings(savedSettings)
       : settingsCore.migrateLegacySettings(languagePrefs);
 }
-function resolveBinaryPath(name) {
-  const env = process.env[name === "ffmpeg" ? "FFMPEG_PATH" : "FFPROBE_PATH"];
+function binarySource(name, config = binaryConfig) {
+  if (config[name === "ffmpeg" ? "ffmpegPath" : "ffprobePath"]) return "config";
+  if (process.env[name === "ffmpeg" ? "FFMPEG_PATH" : "FFPROBE_PATH"])
+    return "env";
+  return "path";
+}
+function resolveBinaryPath(name, config = binaryConfig) {
   return (
-    env ||
-    binaryConfig[name === "ffmpeg" ? "ffmpegPath" : "ffprobePath"] ||
+    config[name === "ffmpeg" ? "ffmpegPath" : "ffprobePath"] ||
+    process.env[name === "ffmpeg" ? "FFMPEG_PATH" : "FFPROBE_PATH"] ||
     name
   );
 }
@@ -573,13 +579,10 @@ async function runEncode(
     const result = await runProcess(resolveBinaryPath("ffmpeg"), args, {
       timeout: 7 * 24 * 60 * 60 * 1000,
       job,
-      onStdout: (chunk) => {
-        parser.consume(chunk);
-        safeSend(sender, "encode-stderr", chunk);
-      },
+      onStdout: (chunk) => parser.consume(chunk),
       onStderr: (chunk) => {
         stderrTail = (stderrTail + chunk).slice(-8000);
-        safeSend(sender, "encode-stderr", chunk);
+        safeSend(sender, "encode-stderr", { jobId: job.id, message: chunk });
       },
     });
     assertNotCancelled(job);
@@ -626,20 +629,25 @@ async function runEncode(
   } catch (error) {
     if (fs.existsSync(stage) && fs.statSync(stage).size > 0 && !job.cancelled) {
       const parsed = path.parse(reservedFinal);
-      const incomplete = ensureSafeOutput(
-        inputPath,
-        path.join(parsed.dir, `${parsed.name}.incomplete${parsed.ext}`),
-      );
+      let incomplete = null;
       try {
+        incomplete = ensureSafeOutput(
+          inputPath,
+          path.join(parsed.dir, `${parsed.name}.incomplete${parsed.ext}`),
+        );
         commitOutput(stage, incomplete);
+        if (error.message && !error.message.includes(".incomplete"))
+          error.message += ` Incomplete output kept at ${incomplete}.`;
       } catch (_) {
         try {
-          if (fs.existsSync(incomplete) && fs.statSync(incomplete).size === 0)
+          if (
+            incomplete &&
+            fs.existsSync(incomplete) &&
+            fs.statSync(incomplete).size === 0
+          )
             fs.unlinkSync(incomplete);
         } catch (_) {}
       }
-      if (error.message && !error.message.includes(".incomplete"))
-        error.message += ` Incomplete output kept at ${incomplete}.`;
     }
     try {
       if (fs.existsSync(reservedFinal) && fs.statSync(reservedFinal).size === 0)
@@ -682,24 +690,18 @@ handle("save-binary-config", async (_event, config) => {
 });
 async function verifyBinaryConfig(config) {
   const check = async (tool) => {
+    const command = resolveBinaryPath(tool, config);
     try {
-      const result = await runProcess(
-        tool === "ffmpeg"
-          ? process.env.FFMPEG_PATH || config.ffmpegPath || tool
-          : process.env.FFPROBE_PATH || config.ffprobePath || tool,
-        ["-version"],
-        { timeout: 8000 },
-      );
+      const result = await runProcess(command, ["-version"], {
+        timeout: 8000,
+      });
       return {
         ok: result.code === 0,
-        command:
-          tool === "ffmpeg"
-            ? process.env.FFMPEG_PATH || config.ffmpegPath || tool
-            : process.env.FFPROBE_PATH || config.ffprobePath || tool,
+        command,
         version: result.stdout + result.stderr,
       };
     } catch (error) {
-      return { ok: false, command: tool, version: "", error: error.message };
+      return { ok: false, command, version: "", error: error.message };
     }
   };
   const [ffmpeg, ffprobe] = await Promise.all([
@@ -711,16 +713,8 @@ async function verifyBinaryConfig(config) {
     ffprobe,
     allOk: ffmpeg.ok && ffprobe.ok,
     source: {
-      ffmpeg: process.env.FFMPEG_PATH
-        ? "env"
-        : config.ffmpegPath
-          ? "config"
-          : "path",
-      ffprobe: process.env.FFPROBE_PATH
-        ? "env"
-        : config.ffprobePath
-          ? "config"
-          : "path",
+      ffmpeg: binarySource("ffmpeg", config),
+      ffprobe: binarySource("ffprobe", config),
     },
     env: {
       ffmpegVar: process.env.FFMPEG_PATH || "",
@@ -804,6 +798,34 @@ handle("reset-settings", async () => {
   return settings;
 });
 handle("get-app-version", async () => app.getVersion());
+handle("set-progress", async (_event, value) => {
+  const progress = Number(value);
+  if (mainWindow && !mainWindow.isDestroyed())
+    mainWindow.setProgressBar(
+      Number.isFinite(progress) && progress >= 0 ? Math.min(1, progress) : -1,
+    );
+  return true;
+});
+handle("notify-queue-finished", async (_event, summary = {}) => {
+  if (!Notification.isSupported()) return false;
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused())
+    return false;
+  const done = Math.max(0, Number(summary.done) || 0);
+  const failed = Math.max(0, Number(summary.failed) || 0);
+  const notification = new Notification({
+    title: "reCodr queue finished",
+    body: `${done} done${failed ? `, ${failed} failed` : ""}.`,
+    icon: getWindowIconPath(),
+  });
+  notification.on("click", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+  notification.show();
+  return true;
+});
 
 const encoderFamilies = {
   nvenc: { hevc: "hevc_nvenc", h264: "h264_nvenc" },
@@ -812,6 +834,40 @@ const encoderFamilies = {
   videotoolbox: { hevc: "hevc_videotoolbox", h264: "h264_videotoolbox" },
   software: { hevc: "libx265", h264: "libx264" },
 };
+async function testHardwareEncoder(codec) {
+  const trial = await runProcess(
+    resolveBinaryPath("ffmpeg"),
+    [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "color=c=black:s=640x360:r=30",
+      "-frames:v",
+      "2",
+      "-c:v",
+      codec,
+      "-f",
+      "null",
+      "-",
+    ],
+    { timeout: 6000 },
+  ).catch((e) => ({ code: -1, stderr: e.message }));
+  if (trial.code === 0) return { state: "available", error: "" };
+  if (trial.code === -1 || trial.code === null)
+    return {
+      state: "untested",
+      error: (trial.stderr || "Encoder runtime test did not complete.").slice(
+        -500,
+      ),
+    };
+  return {
+    state: "unavailable",
+    error: (trial.stderr || "Encoder runtime test failed.").slice(-500),
+  };
+}
 handle("detect-encoders", async () => {
   const result = await runProcess(resolveBinaryPath("ffmpeg"), ["-encoders"], {
     timeout: 10000,
@@ -845,6 +901,7 @@ handle("detect-encoders", async () => {
     }
   }
   const statuses = {};
+  const trials = [];
   for (const [family, codecs] of Object.entries(encoderFamilies))
     for (const codec of [
       ...Object.values(codecs),
@@ -864,43 +921,14 @@ handle("detect-encoders", async () => {
         statuses[codec] = { state: "available", error: "" };
         continue;
       }
-      const trial = await runProcess(
-        resolveBinaryPath("ffmpeg"),
-        [
-          "-hide_banner",
-          "-loglevel",
-          "error",
-          "-f",
-          "lavfi",
-          "-i",
-          "color=c=black:s=640x360:r=30",
-          "-frames:v",
-          "2",
-          "-c:v",
-          codec,
-          "-f",
-          "null",
-          "-",
-        ],
-        { timeout: 6000 },
-      ).catch((e) => ({ code: -1, stderr: e.message }));
-      statuses[codec] =
-        trial.code === 0
-          ? { state: "available", error: "" }
-          : trial.code === -1 || trial.code === null
-            ? {
-                state: "untested",
-                error: (
-                  trial.stderr || "Encoder runtime test did not complete."
-                ).slice(-500),
-              }
-            : {
-                state: "unavailable",
-                error: (trial.stderr || "Encoder runtime test failed.").slice(
-                  -500,
-                ),
-              };
+      statuses[codec] = { state: "untested", error: "" };
+      trials.push(
+        testHardwareEncoder(codec).then((status) => {
+          statuses[codec] = status;
+        }),
+      );
     }
+  await Promise.all(trials);
   const hwPriority = ["nvenc", "amf", "qsv", "videotoolbox"];
   return {
     available,
@@ -923,7 +951,7 @@ handle("select-input-files", async () => {
     filters: [
       {
         name: "Video files",
-        extensions: ["mkv", "mp4", "mov", "webm", "avi", "m4v", "ts", "m2ts"],
+        extensions: core.INPUT_EXTENSIONS,
       },
     ],
   });
